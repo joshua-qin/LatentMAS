@@ -36,7 +36,7 @@ Instead of producing long textual reasoning traces, agents communicate by **pass
 - **Training-free** latent-space alignment for stable generation  
 - **A general technique** compatible with **any HF model** and optionally **vLLM** backends.
 
-Overall, LatentMAS achieves **superior performance**, **lower token usage**, and **major wall-clock speedups** of multi-agent system.
+Overall, LatentMAS achieves **superior performance**, **lower token usage**, and **major wall-clock speedups** of the multi-agent system.
 
 <p align="center">
   <img src="assets/main.png" width="1000">
@@ -70,19 +70,25 @@ Explore community-driven extensions that expand LatentMAS into new domains, arch
 **By Bookmaster9**
 - **Blog (Overview):** https://bookmaster9.github.io/kNN-latentMAS/  
 - **Code:** https://github.com/Bookmaster9/kNN-latentMAS  
-**What it adds:** Introduces kNN-based latent retrieval to improve KV-cache usage, boosting memory efficiency and multi-step reasoning stability across agents.
+- **New Features:** Introduce kNN-based latent retrieval to improve KV-cache usage, boosting memory efficiency and multi-step reasoning stability across agents.
 
 ### 🤖 3. **Hybrid-LatentMAS**
 **By nhminle**
 - **Code:** https://github.com/nhminle/LatentMAS-Hybrid  
-**What it adds:** Supports heterogeneous / hybrid agent collaboration (LLM + non-LLM agents), enabling modular multi-agent pipelines that mix models, tools, and reasoning strategies.
+- **New Features:** Support heterogeneous/hybrid agent collaboration (LLM + non-LLM agents), enabling modular multi-agent pipelines that mix models, tools, and reasoning strategies.
 
 
 ### 🌍 4. **Awareness Network**
 **By Everest-AN**
 - **Website:** https://awareness.market/
 - **Code:** https://github.com/everest-an/Awareness-Market
-**What it adds:** A decentralized AI awareness market product built on LatentMAS research, enabling autonomous agent collaboration and memory sharing.
+- **New Features:** A decentralized AI awareness market product built on LatentMAS research, enabling autonomous agent collaboration and memory sharing.
+
+### 🧩 5. LatentMAS-SLoRA
+**By Arifuzzaman Joy**
+- **Demo:** https://www.youtube.com/watch?v=g7sxYjwgRRk
+- **Code:** https://github.com/Arifuzzamanjoy/latent_mas_slora
+- **New Features:** Augment LatentMAS with role-specialized, dynamically switchable LoRA adapters for better specialization and adaptability.
 
 
 **If your work extends LatentMAS, feel free to open a PR and we’ll feature it here! 🚀**
