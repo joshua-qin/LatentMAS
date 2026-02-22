@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.so
+
+# Optional: uncomment to avoid pushing large eval logs
+# gsm8k_20_evals/*.jsonl
+# gsm8k_20_evals/*.log

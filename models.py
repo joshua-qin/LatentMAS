@@ -20,9 +20,13 @@ def _ensure_pad_token(tokenizer: AutoTokenizer) -> None:
             tokenizer.add_special_tokens({"pad_token": "<pad>"})
 
 
-def _past_length(past_key_values: Optional[Tuple]) -> int:
+def _past_length(past_key_values) -> int:
     if not past_key_values:
         return 0
+    # DynamicCache (transformers >= 4.36) has get_seq_length()
+    if hasattr(past_key_values, "get_seq_length"):
+        return past_key_values.get_seq_length(layer_idx=0)
+    # Legacy tuple cache: (layer0_k, layer0_v), (layer1_k, layer1_v), ...
     k = past_key_values[0][0]
     return k.shape[-2]
 
