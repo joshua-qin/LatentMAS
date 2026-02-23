@@ -1,6 +1,12 @@
-transformers
-torch
-numpy
-tqdm
 accelerate
 datasets
+jinja2>=3.1.0
+matplotlib
+numpy
+pillow
+torch
+tqdm
+transformers
+
+# Optional: install separately if you plan to run with --use_vllm
+# vllm
