@@ -88,6 +88,7 @@ class LatentMASMethod:
 
         batch_size = len(items)
         past_kv: Optional[Tuple] = None
+        past_kv_mask: Optional[torch.Tensor] = None
         agent_traces: List[List[Dict]] = [[] for _ in range(batch_size)]
         final_texts = ["" for _ in range(batch_size)]
 
@@ -135,12 +136,28 @@ class LatentMASMethod:
                     attention_mask=wrapped_mask,
                     latent_steps=self.latent_steps,
                     past_key_values=past_kv,
+                    past_attention_mask=past_kv_mask,
                 )
+                latent_append = torch.ones(
+                    (batch_size, self.latent_steps),
+                    dtype=wrapped_mask.dtype,
+                    device=wrapped_mask.device,
+                )
+                if past_kv_mask is None:
+                    past_kv_mask = wrapped_mask
+                else:
+                    past_kv_mask = torch.cat([past_kv_mask, wrapped_mask], dim=-1)
+                if self.latent_steps > 0:
+                    past_kv_mask = torch.cat([past_kv_mask, latent_append], dim=-1)
                 if self.sequential_info_only or self.latent_only:
                     new_past_len = _past_length(past_kv)
                     tokens_added = new_past_len - prev_past_len
                     tokens_to_keep = self.latent_steps if self.latent_only else tokens_added
                     past_kv = self._truncate_past(past_kv, tokens_to_keep)
+                    if tokens_to_keep <= 0:
+                        past_kv_mask = None
+                    else:
+                        past_kv_mask = past_kv_mask[:, -tokens_to_keep:].contiguous()
 
                 for idx in range(batch_size):
                     mask = wrapped_mask[idx].bool()
@@ -184,6 +201,7 @@ class LatentMASMethod:
                     temperature=self.temperature,
                     top_p=self.top_p,
                     past_key_values=past_for_decoding,
+                    past_attention_mask=past_kv_mask if self.latent_steps > 0 else None,
                 )
                 for idx in range(batch_size):
                     final_text = generated_batch[idx].strip()

@@ -239,12 +239,15 @@ class ModelWrapper:
         temperature: float = 0.7,
         top_p: float = 0.95,
         past_key_values: Optional[Tuple] = None,
+        past_attention_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[List[str], Optional[Tuple]]:
         if input_ids.dim() != 2:
             raise ValueError("input_ids must be 2D with shape [batch, seq_len]")
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids, device=self.device)
-        prompt_lengths = attention_mask.sum(dim=1).tolist()
+        # outputs.sequences are padded to the common prompt width (input_ids.shape[1]),
+        # so slicing with per-row non-pad lengths can leak prompt tokens under left padding.
+        prompt_width = input_ids.shape[1]
         cache_position = None
         if past_key_values is not None:
             past_len = _past_length(past_key_values)
@@ -255,11 +258,20 @@ class ModelWrapper:
                 device=self.device,
             )
             if past_len > 0:
-                past_mask = torch.ones(
-                    (attention_mask.shape[0], past_len),
-                    dtype=attention_mask.dtype,
-                    device=attention_mask.device,
-                )
+                if past_attention_mask is None:
+                    past_mask = torch.ones(
+                        (attention_mask.shape[0], past_len),
+                        dtype=attention_mask.dtype,
+                        device=attention_mask.device,
+                    )
+                else:
+                    if past_attention_mask.shape != (attention_mask.shape[0], past_len):
+                        raise ValueError(
+                            "past_attention_mask shape must match (batch_size, past_len)"
+                        )
+                    past_mask = past_attention_mask.to(
+                        device=attention_mask.device, dtype=attention_mask.dtype
+                    )
                 attention_mask = torch.cat([past_mask, attention_mask], dim=-1)
         outputs = self.model.generate(
             input_ids=input_ids,
@@ -276,9 +288,8 @@ class ModelWrapper:
         )
         sequences = outputs.sequences
         generations: List[str] = []
-        for idx, length in enumerate(prompt_lengths):
-            length = int(length)
-            generated_ids = sequences[idx, length:]
+        for idx in range(sequences.shape[0]):
+            generated_ids = sequences[idx, prompt_width:]
             text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
             generations.append(text)
         return generations, outputs.past_key_values
@@ -298,6 +309,7 @@ class ModelWrapper:
         *,
         latent_steps: int,
         past_key_values: Optional[Tuple] = None,
+        past_attention_mask: Optional[torch.Tensor] = None,
     ) -> Tuple:
         if input_ids.dim() != 2:
             raise ValueError("input_ids must be 2D with shape [batch, seq_len]")
@@ -311,11 +323,20 @@ class ModelWrapper:
         if past_key_values is not None:
             past_len = _past_length(past_key_values)
             if past_len > 0:
-                past_mask = torch.ones(
-                    (attention_mask.shape[0], past_len),
-                    dtype=attention_mask.dtype,
-                    device=attention_mask.device,
-                )
+                if past_attention_mask is None:
+                    past_mask = torch.ones(
+                        (attention_mask.shape[0], past_len),
+                        dtype=attention_mask.dtype,
+                        device=attention_mask.device,
+                    )
+                else:
+                    if past_attention_mask.shape != (attention_mask.shape[0], past_len):
+                        raise ValueError(
+                            "past_attention_mask shape must match (batch_size, past_len)"
+                        )
+                    past_mask = past_attention_mask.to(
+                        device=attention_mask.device, dtype=attention_mask.dtype
+                    )
                 attention_mask = torch.cat([past_mask, attention_mask], dim=-1)
 
         outputs = self.model(
