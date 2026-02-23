@@ -18,6 +18,8 @@ def _ensure_pad_token(tokenizer: AutoTokenizer) -> None:
             tokenizer.pad_token = tokenizer.eos_token
         else:
             tokenizer.add_special_tokens({"pad_token": "<pad>"})
+    # Decoder-only models should use left padding for correct batched generation.
+    tokenizer.padding_side = "left"
 
 
 def _past_length(past_key_values) -> int:
@@ -29,6 +31,17 @@ def _past_length(past_key_values) -> int:
     # Legacy tuple cache: (layer0_k, layer0_v), (layer1_k, layer1_v), ...
     k = past_key_values[0][0]
     return k.shape[-2]
+
+
+def _last_nonpad_indices(attention_mask: torch.Tensor) -> torch.Tensor:
+    if attention_mask.dim() != 2:
+        raise ValueError("attention_mask must be 2D with shape [batch, seq_len]")
+    mask = attention_mask.to(dtype=torch.long)
+    seq_len = mask.shape[1]
+    positions = torch.arange(seq_len, device=mask.device, dtype=torch.long).unsqueeze(0)
+    # Works for both left- and right-padding: pick the largest position where mask == 1.
+    last = (positions * mask).max(dim=1).values
+    return torch.clamp(last, min=0)
 
 
 class ModelWrapper:
@@ -293,6 +306,7 @@ class ModelWrapper:
             attention_mask = torch.ones_like(input_ids, device=self.device)
         else:
             attention_mask = attention_mask.to(self.device)
+        input_attention_mask = attention_mask
 
         if past_key_values is not None:
             past_len = _past_length(past_key_values)
@@ -314,8 +328,10 @@ class ModelWrapper:
         )
         past = outputs.past_key_values
 
-        e_t = outputs.hidden_states[0][:, -1, :]          # [B, D]
-        last_hidden = outputs.hidden_states[-1][:, -1, :] # [B, D]
+        last_indices = _last_nonpad_indices(input_attention_mask)
+        batch_indices = torch.arange(input_ids.shape[0], device=input_ids.device)
+        e_t = outputs.hidden_states[0][batch_indices, last_indices, :]          # [B, D]
+        last_hidden = outputs.hidden_states[-1][batch_indices, last_indices, :] # [B, D]
         h_t = last_hidden.detach().clone()
 
         e_t_plus_1 = None
@@ -368,6 +384,7 @@ class ModelWrapper:
             attention_mask = torch.ones_like(input_ids, device=self.HF_device)
         else:
             attention_mask = attention_mask.to(self.HF_device)
+        input_attention_mask = attention_mask
         if past_key_values is not None:
             past_len = _past_length(past_key_values)
             if past_len > 0:
@@ -386,7 +403,9 @@ class ModelWrapper:
             return_dict=True,
         )
         past = outputs.past_key_values
-        last_hidden = outputs.hidden_states[-1][:, -1, :]
+        last_indices = _last_nonpad_indices(input_attention_mask)
+        batch_indices = torch.arange(input_ids.shape[0], device=input_ids.device)
+        last_hidden = outputs.hidden_states[-1][batch_indices, last_indices, :]
         
         curr_output_embedding = [] 
         curr_output_embedding.append(outputs.hidden_states[0])  # input embedding
@@ -417,4 +436,3 @@ class ModelWrapper:
             curr_output_embedding.append(latent_embed.detach())
 
         return past, torch.cat(curr_output_embedding, dim=1) # Output input embeddings
-
