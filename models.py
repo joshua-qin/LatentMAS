@@ -348,6 +348,7 @@ class ModelWrapper:
             return_dict=True,
         )
         past = outputs.past_key_values
+        rollout_attention_mask = attention_mask
 
         last_indices = _last_nonpad_indices(input_attention_mask)
         batch_indices = torch.arange(input_ids.shape[0], device=input_ids.device)
@@ -371,15 +372,16 @@ class ModelWrapper:
             
             latent_embed = latent_vec.unsqueeze(1)
 
-            past_len = _past_length(past)
-            latent_mask = torch.ones(
-                (latent_embed.shape[0], past_len + 1),
-                dtype=torch.long,
-                device=self.device,
+            # Preserve non-pad masking from prompt prefill; only append one valid latent position.
+            latent_append = torch.ones(
+                (latent_embed.shape[0], 1),
+                dtype=rollout_attention_mask.dtype,
+                device=rollout_attention_mask.device,
             )
+            rollout_attention_mask = torch.cat([rollout_attention_mask, latent_append], dim=-1)
             outputs = self.model(
                 inputs_embeds=latent_embed,
-                attention_mask=latent_mask,
+                attention_mask=rollout_attention_mask,
                 past_key_values=past,
                 use_cache=True,
                 output_hidden_states=True,
@@ -424,6 +426,7 @@ class ModelWrapper:
             return_dict=True,
         )
         past = outputs.past_key_values
+        rollout_attention_mask = attention_mask
         last_indices = _last_nonpad_indices(input_attention_mask)
         batch_indices = torch.arange(input_ids.shape[0], device=input_ids.device)
         last_hidden = outputs.hidden_states[-1][batch_indices, last_indices, :]
@@ -437,15 +440,15 @@ class ModelWrapper:
             source_model = self.HF_model if hasattr(self, "HF_model") else self.model
             latent_vec = self._apply_latent_realignment(last_hidden, source_model)
             latent_embed = latent_vec.unsqueeze(1)
-            past_len = _past_length(past)
-            latent_mask = torch.ones(
-                (latent_embed.shape[0], past_len + 1),
-                dtype=torch.long,
-                device=latent_embed.device,
+            latent_append = torch.ones(
+                (latent_embed.shape[0], 1),
+                dtype=rollout_attention_mask.dtype,
+                device=rollout_attention_mask.device,
             )
+            rollout_attention_mask = torch.cat([rollout_attention_mask, latent_append], dim=-1)
             outputs = self.HF_model(
                 inputs_embeds=latent_embed,
-                attention_mask=latent_mask,
+                attention_mask=rollout_attention_mask,
                 past_key_values=past,
                 use_cache=True,
                 output_hidden_states=True,
