@@ -26,6 +26,7 @@ class BaselineMethod:
         self.method_name = "baseline"
         self.args = args
         self.task = args.task
+        self.greedy = bool(getattr(args, "greedy", False)) if args else False
 
     def run_batch(self, items: List[Dict]) -> List[Dict]:
         if len(items) > self.generate_bs:
@@ -44,6 +45,7 @@ class BaselineMethod:
                 max_new_tokens=self.max_new_tokens,
                 temperature=self.temperature,
                 top_p=self.top_p,
+                do_sample=not self.greedy,
             )
         else:
             generated_batch, _ = self.model.generate_text_batch(
@@ -52,6 +54,7 @@ class BaselineMethod:
                 max_new_tokens=self.max_new_tokens,
                 temperature=self.temperature,
                 top_p=self.top_p,
+                do_sample=not self.greedy,
             )
 
         results: List[Dict] = []

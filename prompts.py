@@ -15,29 +15,26 @@ def _hierarchical_meta_task_constraints(task: str) -> str:
 
 
 def build_meta_agent_message_hierarchical_latent_mas(question: str, args=None):
-    system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+    system_message = "You are a strict meta-prompt generator for multi-agent reasoning."
     task = getattr(args, "task", "")
     constraints = _hierarchical_meta_task_constraints(task)
     schema = {"worker_prompts": ["prompt for worker 1", "prompt for worker 2", "prompt for worker 3"]}
     user_content = f"""
-You are a Meta Agent that writes high-quality prompts for three independent worker agents in a hierarchical latent multi-agent system.
+Generate prompts for 3 independent workers. Keep them question-grounded and meaningfully different.
 
-Given the question below, produce exactly three diverse prompts:
-- one for worker 1
-- one for worker 2
-- one for worker 3
-
-Requirements:
-- Prompts must be diverse in perspective and strategy.
-- Prompts must be specific to this question.
-- Prompts must be concise and actionable.
-- Treat the workers as independent reasoners (not planner/critic/refiner chain roles).
-- {constraints}
+Rules:
+1) Return valid JSON only with exactly one key: "worker_prompts".
+2) "worker_prompts" must be exactly 3 strings.
+3) Each prompt must be 18-45 words, single paragraph.
+4) Each prompt must cite at least 2 concrete question details (e.g., age, symptoms, labs, imaging, timeline, option text).
+5) Avoid generic filler phrases (e.g., decomposition-first, verification-first, efficiency-first, generic "step-by-step").
+6) Treat workers as independent reasoners
+7) {constraints}
 
 Question:
 {question}
 
-Return ONLY valid JSON (no markdown), with this exact schema and exactly 3 strings in worker_prompts:
+Return only JSON using this exact schema:
 {json.dumps(schema)}
 """
     return [

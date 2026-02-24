@@ -56,6 +56,18 @@ def process_batch(
         print(f"\n==================== Problem #{problem_idx} ====================")
         print("Question:")
         print(res.get("question", "").strip())
+        meta_agent = res.get("meta_agent", {})
+        if isinstance(meta_agent, dict) and meta_agent.get("raw_output"):
+            print("----- Meta Agent -----")
+            print("[Raw Output]")
+            print(str(meta_agent.get("raw_output", "")).rstrip())
+            print("[Parsed worker_prompts]")
+            print(json.dumps(meta_agent.get("parsed_worker_prompts", []), ensure_ascii=False))
+            used_defaults = meta_agent.get("used_default_roles", [])
+            if used_defaults:
+                print("[Fallback Defaults Used]")
+                print(", ".join(used_defaults))
+            print("----------------------------------------------")
         agents = res.get("agents", [])
         for a in agents:
             name = a.get("name", "Agent")
@@ -107,6 +119,7 @@ def main():
     parser.add_argument("--text_mas_context_length", type=int, default=-1, help="TextMAS context length limit")
     parser.add_argument("--think", action="store_true", help="Manually add think token in the prompt for LatentMAS")
     parser.add_argument("--latent_space_realign", action="store_true")
+    parser.add_argument("--greedy", action="store_true", help="Use greedy decoding (deterministic, no sampling) for text generation.")
     parser.add_argument("--seed", type=int, default=42)
 
     # vLLM support

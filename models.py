@@ -160,12 +160,15 @@ class ModelWrapper:
         max_new_tokens: int = 256,
         temperature: float = 0.7,
         top_p: float = 0.95,
+        do_sample: bool = True,
     ) -> List[str]:
         if not self.vllm_engine:
             raise RuntimeError("vLLM engine not initialized. Pass use_vllm=True to ModelWrapper.")
+        effective_temperature = temperature if do_sample else 0.0
+        effective_top_p = top_p if do_sample else 1.0
         sampling_params = SamplingParams(
-            temperature=temperature,
-            top_p=top_p,
+            temperature=effective_temperature,
+            top_p=effective_top_p,
             max_tokens=max_new_tokens,
         )
         outputs = self.vllm_engine.generate(prompts, sampling_params)
@@ -238,6 +241,7 @@ class ModelWrapper:
         max_new_tokens: int = 256,
         temperature: float = 0.7,
         top_p: float = 0.95,
+        do_sample: bool = True,
         past_key_values: Optional[Tuple] = None,
         past_attention_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[List[str], Optional[Tuple]]:
@@ -273,19 +277,23 @@ class ModelWrapper:
                         device=attention_mask.device, dtype=attention_mask.dtype
                     )
                 attention_mask = torch.cat([past_mask, attention_mask], dim=-1)
-        outputs = self.model.generate(
+        generate_kwargs = dict(
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            do_sample=True,
             pad_token_id=self.tokenizer.pad_token_id,
             return_dict_in_generate=True,
             output_scores=False,
             past_key_values=past_key_values,
             cache_position=cache_position,
         )
+        if do_sample:
+            generate_kwargs["temperature"] = temperature
+            generate_kwargs["top_p"] = top_p
+            generate_kwargs["do_sample"] = True
+        else:
+            generate_kwargs["do_sample"] = False
+        outputs = self.model.generate(**generate_kwargs)
         sequences = outputs.sequences
         generations: List[str] = []
         for idx in range(sequences.shape[0]):

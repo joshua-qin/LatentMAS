@@ -29,6 +29,7 @@ class TextMASMethod:
         self.args = args
         self.method_name = "text_mas"
         self.task = args.task
+        self.greedy = bool(getattr(args, "greedy", False)) if args else False
         
     def run_batch(self, items: List[Dict]) -> List[Dict]:
         if len(items) > self.generate_bs:
@@ -75,6 +76,7 @@ class TextMASMethod:
                     max_new_tokens=self.max_new_tokens_each,
                     temperature=self.temperature,
                     top_p=self.top_p,
+                    do_sample=not self.greedy,
                 )
             else:
                 generated_texts, _ = self.model.generate_text_batch(
@@ -83,6 +85,7 @@ class TextMASMethod:
                     max_new_tokens=self.max_new_tokens_each,
                     temperature=self.temperature,
                     top_p=self.top_p,
+                    do_sample=not self.greedy,
                 )
 
             agent_name_map_for_prompt_hierarchical = {

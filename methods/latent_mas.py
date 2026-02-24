@@ -33,6 +33,7 @@ class LatentMASMethod:
     ) -> None:
         self.args = args
         self.model = model
+        self.greedy = bool(getattr(args, "greedy", False)) if args else False
         self.latent_steps = latent_steps
         self.judger_max_new_tokens = judger_max_new_tokens
         self.temperature = temperature
@@ -50,9 +51,11 @@ class LatentMASMethod:
 
         if getattr(args, "use_vllm", False):
             from vllm import SamplingParams
+            sampling_temperature = temperature if not self.greedy else 0.0
+            sampling_top_p = top_p if not self.greedy else 1.0
             self.sampling_params = SamplingParams(
-                temperature=temperature,
-                top_p=top_p,
+                temperature=sampling_temperature,
+                top_p=sampling_top_p,
                 max_tokens=args.max_new_tokens,
             )
         else:
@@ -132,14 +135,16 @@ class LatentMASMethod:
                 return fallback_prompts[:3]
         return []
 
-    def _generate_hierarchical_meta_prompts(self, items: List[Dict]) -> List[Dict[str, str]]:
+    def _generate_hierarchical_meta_prompts(
+        self, items: List[Dict]
+    ) -> Tuple[List[Dict[str, str]], List[Dict]]:
         worker_roles = [agent.role for agent in self.agents if agent.role != "judger"]
         default_map = self._default_meta_prompts(worker_roles)
 
         if self.args.prompt != "hierarchical":
-            return [{} for _ in items]
+            return [{} for _ in items], [{} for _ in items]
         if not bool(getattr(self.args, "use_meta_prompt_generator", False)):
-            return [{} for _ in items]
+            return [{} for _ in items], [{} for _ in items]
 
         batch_messages = [
             build_meta_agent_message_hierarchical_latent_mas(question=item["question"], args=self.args)
@@ -154,6 +159,7 @@ class LatentMASMethod:
                 max_new_tokens=512,
                 temperature=self.temperature,
                 top_p=self.top_p,
+                do_sample=not self.greedy,
             )
         else:
             generated, _ = self.model.generate_text_batch(
@@ -162,17 +168,29 @@ class LatentMASMethod:
                 max_new_tokens=512,
                 temperature=self.temperature,
                 top_p=self.top_p,
+                do_sample=not self.greedy,
             )
 
         role_prompts: List[Dict[str, str]] = []
+        meta_debug: List[Dict] = []
         for text in generated:
             parsed = self._parse_meta_json(text)
             combined = default_map.copy()
+            used_default_roles: List[str] = []
             for idx, role in enumerate(worker_roles):
                 if idx < len(parsed) and parsed[idx]:
                     combined[role] = parsed[idx]
+                else:
+                    used_default_roles.append(role)
             role_prompts.append(combined)
-        return role_prompts
+            meta_debug.append(
+                {
+                    "raw_output": text,
+                    "parsed_worker_prompts": parsed,
+                    "used_default_roles": used_default_roles,
+                }
+            )
+        return role_prompts, meta_debug
 
     @staticmethod
     def _slice_tensor(tensor: torch.Tensor, tokens_to_keep: int) -> torch.Tensor:
@@ -212,7 +230,7 @@ class LatentMASMethod:
         past_kv_mask: Optional[torch.Tensor] = None
         agent_traces: List[List[Dict]] = [[] for _ in range(batch_size)]
         final_texts = ["" for _ in range(batch_size)]
-        meta_role_prompts = self._generate_hierarchical_meta_prompts(items)
+        meta_role_prompts, meta_debug = self._generate_hierarchical_meta_prompts(items)
 
         for agent in self.agents:
 
@@ -334,6 +352,7 @@ class LatentMASMethod:
                     max_new_tokens=self.judger_max_new_tokens,
                     temperature=self.temperature,
                     top_p=self.top_p,
+                    do_sample=not self.greedy,
                     past_key_values=past_for_decoding,
                     past_attention_mask=past_kv_mask if self.latent_steps > 0 else None,
                 )
@@ -398,6 +417,7 @@ class LatentMASMethod:
                     "prediction": pred,
                     "raw_prediction": final_text,
                     "agents": agent_traces[idx],
+                    "meta_agent": meta_debug[idx] if idx < len(meta_debug) else {},
                     "correct": ok,
                 }
             )
@@ -411,7 +431,7 @@ class LatentMASMethod:
         past_kv: Optional[Tuple] = None
         agent_traces: List[List[Dict]] = [[] for _ in range(batch_size)]
         final_texts = ["" for _ in range(batch_size)]
-        meta_role_prompts = self._generate_hierarchical_meta_prompts(items)
+        meta_role_prompts, meta_debug = self._generate_hierarchical_meta_prompts(items)
 
         embedding_record = []
         for agent in self.agents:
@@ -600,6 +620,7 @@ class LatentMASMethod:
                     "prediction": pred,
                     "raw_prediction": final_text,
                     "agents": agent_traces[idx],
+                    "meta_agent": meta_debug[idx] if idx < len(meta_debug) else {},
                     "correct": ok,
                 }
             )
