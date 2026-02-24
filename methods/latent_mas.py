@@ -156,7 +156,7 @@ class LatentMASMethod:
         if self.model.use_vllm:
             generated = self.model.vllm_generate_text_batch(
                 prompts,
-                max_new_tokens=512,
+                max_new_tokens=1024,
                 temperature=self.temperature,
                 top_p=self.top_p,
                 do_sample=not self.greedy,
@@ -165,7 +165,7 @@ class LatentMASMethod:
             generated, _ = self.model.generate_text_batch(
                 input_ids,
                 attention_mask,
-                max_new_tokens=512,
+                max_new_tokens=1024,
                 temperature=self.temperature,
                 top_p=self.top_p,
                 do_sample=not self.greedy,
