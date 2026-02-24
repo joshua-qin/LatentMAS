@@ -1,4 +1,51 @@
 
+import json
+
+
+def _hierarchical_meta_task_constraints(task: str) -> str:
+    if task in ["gsm8k", "aime2024", "aime2025"]:
+        return "Each role should encourage step-by-step reasoning and a final answer formatted as \\boxed{...}."
+    if task in ["arc_easy", "arc_challenge", "gpqa", "medqa"]:
+        return "Each role should enforce final answer selection from A,B,C,D and formatting as \\boxed{A/B/C/D}."
+    if task in ["mbppplus", "humanevalplus"]:
+        return "Each role should enforce output as a single self-contained Python markdown code block."
+    if task in ["winogrande"]:
+        return "Each role should enforce final answer selection from 1 or 2 and formatting as \\boxed{1/2}."
+    return "Each role should encourage concise, task-focused reasoning and clear final answers."
+
+
+def build_meta_agent_message_hierarchical_latent_mas(question: str, args=None):
+    system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+    task = getattr(args, "task", "")
+    constraints = _hierarchical_meta_task_constraints(task)
+    schema = {"worker_prompts": ["prompt for worker 1", "prompt for worker 2", "prompt for worker 3"]}
+    user_content = f"""
+You are a Meta Agent that writes high-quality prompts for three independent worker agents in a hierarchical latent multi-agent system.
+
+Given the question below, produce exactly three diverse prompts:
+- one for worker 1
+- one for worker 2
+- one for worker 3
+
+Requirements:
+- Prompts must be diverse in perspective and strategy.
+- Prompts must be specific to this question.
+- Prompts must be concise and actionable.
+- Treat the workers as independent reasoners (not planner/critic/refiner chain roles).
+- {constraints}
+
+Question:
+{question}
+
+Return ONLY valid JSON (no markdown), with this exact schema and exactly 3 strings in worker_prompts:
+{json.dumps(schema)}
+"""
+    return [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": user_content},
+    ]
+
+
 def build_agent_message_sequential_latent_mas(role: str, question: str, context: str = "", method=None, args=None):
 
     system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
@@ -115,17 +162,29 @@ Now, reason step by step and output the final answer inside \\boxed{{YOUR_FINAL_
     ]
 
 
-def build_agent_message_hierarchical_latent_mas(role: str, question: str, context: str = "", method=None, args=None):
+def build_agent_message_hierarchical_latent_mas(
+    role: str,
+    question: str,
+    context: str = "",
+    method=None,
+    args=None,
+    meta_prompt: str = "",
+):
 
     system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
 
     assert method in ["latent_mas"], "this prompt only for latent_mas method"
     assert "qwen" in args.model_name.lower(), "this prompt only for qwen models"
 
+    meta_guidance = ""
+    if role != "judger" and meta_prompt:
+        meta_guidance = f"\nMeta-Agent Guidance:\n{meta_prompt}\n"
+
     if args.task in ['gsm8k', 'aime2024', 'aime2025']:
         if role == "planner":
             user_content = f"""
-You are a math agent. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+{meta_guidance}
 
 Input Question: {question}
 
@@ -134,7 +193,8 @@ Your response:
     
         elif role == "critic":
             user_content = f"""
-You are a science agent. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+{meta_guidance}
 
 Input Question: {question}     
 
@@ -143,7 +203,8 @@ Your response:
     
         elif role == "refiner":
             user_content = f"""
-You are a code agent. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+{meta_guidance}
 
 Input Question: {question}
 
@@ -164,8 +225,9 @@ Your response:
 
             if role == "planner":
                 user_content = f"""
-You are a math agent. Given the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+You are an independent worker agent in a hierarchical system. Given the input question, put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 Your final answer must be selected from A,B,C,D. 
+{meta_guidance}
 
 Input Question: {question}
 
@@ -173,8 +235,9 @@ Your response:
 """
             elif role == "critic":
                 user_content = f"""
-You are a science agent. Given the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+You are an independent worker agent in a hierarchical system. Given the input question, put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 Your final answer must be selected from A,B,C,D. 
+{meta_guidance}
 
 Input Question: {question}     
 
@@ -182,8 +245,9 @@ Your response:
 """
             elif role == "refiner":
                 user_content = f"""
-You are a code agent. Given the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+You are an independent worker agent in a hierarchical system. Given the input question, put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 Your final answer must be selected from A,B,C,D. 
+{meta_guidance}
 
 Input Question: {question}
 
@@ -203,8 +267,9 @@ Your response:
         else:
             if role == "planner":
                 user_content = f"""
-You are a math agent. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 Your final answer must be selected from A,B,C,D. For example \\boxed{{A}}. Do not add any other contents inside the box.
+{meta_guidance}
 
 Input Question: {question}
 
@@ -213,8 +278,9 @@ Your response:
     
             elif role == "critic":
                 user_content = f"""
-You are a science agent. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 Your final answer must be selected from A,B,C,D. For example \\boxed{{A}}. Do not add any other contents inside the box.
+{meta_guidance}
 
 Input Question: {question}     
 
@@ -223,8 +289,9 @@ Your response:
     
             elif role == "refiner":
                 user_content = f"""
-You are a code agent. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 Your final answer must be selected from A,B,C,D. For example \\boxed{{A}}. Do not add any other contents inside the box.
+{meta_guidance}
 
 Input Question: {question}
 
@@ -245,11 +312,12 @@ Your response:
         
         if role == "planner":
             user_content = f"""
-You are a math agent. Given the input question, reason step by step: please provide an efficient and self-contained Python function that solves the following problem in a markdown code block:\n```\nYOUR_PYTHON_CODE\n```.
+You are an independent worker agent in a hierarchical system. Given the input question, reason step by step: please provide an efficient and self-contained Python function that solves the following problem in a markdown code block:\n```\nYOUR_PYTHON_CODE\n```.
 You must put all python code as self-contained Python function in markdown code blocks. For example ```python
 import math
 def add(a, b):
     return a + b```. Do not add any other contents inside the markdown code block. 
+{meta_guidance}
 
 Input Question: {question}
 
@@ -257,11 +325,12 @@ Your response:
 """
         elif role == "critic":
             user_content = f"""
-You are a science agent. Given the input question, reason step by step: please provide an efficient and self-contained Python function that solves the following problem in a markdown code block:\n```\nYOUR_PYTHON_CODE\n```.
+You are an independent worker agent in a hierarchical system. Given the input question, reason step by step: please provide an efficient and self-contained Python function that solves the following problem in a markdown code block:\n```\nYOUR_PYTHON_CODE\n```.
 You must put all python code as self-contained Python function in markdown code blocks. For example ```python
 import math
 def add(a, b):
     return a + b```. Do not add any other contents inside the markdown code block. 
+{meta_guidance}
 
 Input Question: {question}
 
@@ -269,11 +338,12 @@ Your response:
 """
         elif role == "refiner":
             user_content = f"""
-You are a code agent. Given the input question, reason step by step: please provide an efficient and self-contained Python function that solves the following problem in a markdown code block:\n```\nYOUR_PYTHON_CODE\n```.
+You are an independent worker agent in a hierarchical system. Given the input question, reason step by step: please provide an efficient and self-contained Python function that solves the following problem in a markdown code block:\n```\nYOUR_PYTHON_CODE\n```.
 You must put all python code as self-contained Python function in markdown code blocks. For example ```python
 import math
 def add(a, b):
     return a + b```. Do not add any other contents inside the markdown code block. 
+{meta_guidance}
 
 Input Question: {question}
 
@@ -295,8 +365,9 @@ Your response:
     elif args.task in ["winogrande"]:
         if role == "planner":
             user_content = f"""
-You are a math agent. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 "Your final answer must be selected from 1 and 2. For example \\boxed{{1}} or \\boxed{{2}}. Do not add any other contents inside the box."
+{meta_guidance}
 
 Input Question: {question}
 
@@ -305,8 +376,9 @@ Your response:
     
         elif role == "critic":
             user_content = f"""
-You are a science agent. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 "Your final answer must be selected from 1 and 2. For example \\boxed{{1}} or \\boxed{{2}}. Do not add any other contents inside the box."
+{meta_guidance}
 
 Input Question: {question}     
 
@@ -315,8 +387,9 @@ Your response:
     
         elif role == "refiner":
             user_content = f"""
-You are a code agent. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 "Your final answer must be selected from 1 and 2. For example \\boxed{{1}} or \\boxed{{2}}. Do not add any other contents inside the box."
+{meta_guidance}
 
 Input Question: {question}
 
@@ -763,4 +836,3 @@ Present your reasoning, and then clearly state your final answer at the end.
         {"role": "system", "content": system_message},
         {"role": "user", "content": user_content},
     ]
-

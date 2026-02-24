@@ -7,6 +7,7 @@ pillow
 torch
 tqdm
 transformers
+vllm
 
 # Optional: install separately if you plan to run with --use_vllm
 # vllm

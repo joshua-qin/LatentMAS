@@ -1,8 +1,14 @@
+import json
+import re
 from typing import Dict, List, Optional, Tuple
 
 from . import default_agents
 from models import ModelWrapper, _past_length
-from prompts import build_agent_message_sequential_latent_mas, build_agent_message_hierarchical_latent_mas
+from prompts import (
+    build_agent_message_sequential_latent_mas,
+    build_agent_message_hierarchical_latent_mas,
+    build_meta_agent_message_hierarchical_latent_mas,
+)
 from utils import extract_gsm8k_answer, normalize_answer, extract_markdown_python_block, run_with_timeout
 import torch
 import argparse
@@ -54,6 +60,121 @@ class LatentMASMethod:
         self.task = args.task
 
     @staticmethod
+    def _default_meta_prompts(worker_roles: List[str]) -> Dict[str, str]:
+        defaults = [
+            "Use a decomposition-first strategy: break the task into explicit subproblems and solve step by step.",
+            "Use a verification-first strategy: challenge assumptions, test alternatives, and justify each step.",
+            "Use an efficiency-first strategy: target a concise solution path with minimal but sufficient reasoning.",
+        ]
+        role_to_prompt: Dict[str, str] = {}
+        for idx, role in enumerate(worker_roles):
+            role_to_prompt[role] = defaults[min(idx, len(defaults) - 1)]
+        return role_to_prompt
+
+    @staticmethod
+    def _normalize_meta_value(value) -> str:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
+        return ""
+
+    @staticmethod
+    def _parse_meta_json(raw_text: str) -> List[str]:
+        candidates: List[str] = []
+        stripped = raw_text.strip()
+        if stripped:
+            candidates.append(stripped)
+
+        fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, flags=re.DOTALL)
+        if fenced_match:
+            candidates.append(fenced_match.group(1).strip())
+
+        first_brace = raw_text.find("{")
+        last_brace = raw_text.rfind("}")
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            candidates.append(raw_text[first_brace : last_brace + 1].strip())
+
+        for candidate in candidates:
+            try:
+                loaded = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(loaded, dict):
+                continue
+            if isinstance(loaded.get("worker_prompts"), list):
+                prompts: List[str] = []
+                for item in loaded["worker_prompts"]:
+                    normalized = LatentMASMethod._normalize_meta_value(item)
+                    if normalized:
+                        prompts.append(normalized)
+                if prompts:
+                    return prompts[:3]
+
+            ordered_worker_keys = ["worker_1", "worker_2", "worker_3", "agent_1", "agent_2", "agent_3"]
+            keyed_prompts: List[str] = []
+            for key in ordered_worker_keys:
+                normalized = LatentMASMethod._normalize_meta_value(loaded.get(key))
+                if normalized:
+                    keyed_prompts.append(normalized)
+            if keyed_prompts:
+                return keyed_prompts[:3]
+
+            fallback_roles = ["planner", "critic", "refiner"]
+            fallback_prompts: List[str] = []
+            for role in fallback_roles:
+                normalized = LatentMASMethod._normalize_meta_value(loaded.get(role))
+                if normalized:
+                    fallback_prompts.append(normalized)
+            if fallback_prompts:
+                return fallback_prompts[:3]
+        return []
+
+    def _generate_hierarchical_meta_prompts(self, items: List[Dict]) -> List[Dict[str, str]]:
+        worker_roles = [agent.role for agent in self.agents if agent.role != "judger"]
+        default_map = self._default_meta_prompts(worker_roles)
+
+        if self.args.prompt != "hierarchical":
+            return [{} for _ in items]
+        if not bool(getattr(self.args, "use_meta_prompt_generator", False)):
+            return [{} for _ in items]
+
+        batch_messages = [
+            build_meta_agent_message_hierarchical_latent_mas(question=item["question"], args=self.args)
+            for item in items
+        ]
+        prompts, input_ids, attention_mask, _ = self.model.prepare_chat_batch(
+            batch_messages, add_generation_prompt=True
+        )
+        if self.model.use_vllm:
+            generated = self.model.vllm_generate_text_batch(
+                prompts,
+                max_new_tokens=512,
+                temperature=self.temperature,
+                top_p=self.top_p,
+            )
+        else:
+            generated, _ = self.model.generate_text_batch(
+                input_ids,
+                attention_mask,
+                max_new_tokens=512,
+                temperature=self.temperature,
+                top_p=self.top_p,
+            )
+
+        role_prompts: List[Dict[str, str]] = []
+        for text in generated:
+            parsed = self._parse_meta_json(text)
+            combined = default_map.copy()
+            for idx, role in enumerate(worker_roles):
+                if idx < len(parsed) and parsed[idx]:
+                    combined[role] = parsed[idx]
+            role_prompts.append(combined)
+        return role_prompts
+
+    @staticmethod
     def _slice_tensor(tensor: torch.Tensor, tokens_to_keep: int) -> torch.Tensor:
         if tokens_to_keep <= 0:
             return tensor[..., 0:0, :].contiguous()
@@ -91,6 +212,7 @@ class LatentMASMethod:
         past_kv_mask: Optional[torch.Tensor] = None
         agent_traces: List[List[Dict]] = [[] for _ in range(batch_size)]
         final_texts = ["" for _ in range(batch_size)]
+        meta_role_prompts = self._generate_hierarchical_meta_prompts(items)
 
         for agent in self.agents:
 
@@ -101,8 +223,19 @@ class LatentMASMethod:
                 ]
             elif self.args.prompt == "hierarchical":
                 batch_messages = [
-                    build_agent_message_hierarchical_latent_mas(role=agent.role, question=item["question"], context="", method=self.method_name, args=self.args)
-                    for item in items
+                    build_agent_message_hierarchical_latent_mas(
+                        role=agent.role,
+                        question=item["question"],
+                        context="",
+                        method=self.method_name,
+                        args=self.args,
+                        meta_prompt=(
+                            meta_role_prompts[idx].get(agent.role, "")
+                            if agent.role != "judger"
+                            else ""
+                        ),
+                    )
+                    for idx, item in enumerate(items)
                 ]
 
 
@@ -166,6 +299,7 @@ class LatentMASMethod:
                         {
                             "name": agent.name,
                             "role": agent.role,
+                            "meta_prompt": meta_role_prompts[idx].get(agent.role, "") if self.args.prompt == "hierarchical" and agent.role != "judger" else "",
                             "input": wrapped_prompts[idx],
                             "input_ids": trimmed_ids,
                             "input_tokens": wrapped_tokens_batch[idx],
@@ -277,6 +411,7 @@ class LatentMASMethod:
         past_kv: Optional[Tuple] = None
         agent_traces: List[List[Dict]] = [[] for _ in range(batch_size)]
         final_texts = ["" for _ in range(batch_size)]
+        meta_role_prompts = self._generate_hierarchical_meta_prompts(items)
 
         embedding_record = []
         for agent in self.agents:
@@ -288,8 +423,19 @@ class LatentMASMethod:
                 ]
             elif self.args.prompt == "hierarchical":
                 batch_messages = [
-                    build_agent_message_hierarchical_latent_mas(role=agent.role, question=item["question"], context="", method=self.method_name, args=self.args)
-                    for item in items
+                    build_agent_message_hierarchical_latent_mas(
+                        role=agent.role,
+                        question=item["question"],
+                        context="",
+                        method=self.method_name,
+                        args=self.args,
+                        meta_prompt=(
+                            meta_role_prompts[idx].get(agent.role, "")
+                            if agent.role != "judger"
+                            else ""
+                        ),
+                    )
+                    for idx, item in enumerate(items)
                 ]
                 
             prompts, input_ids, attention_mask, tokens_batch = self.model.prepare_chat_batch(
@@ -348,6 +494,7 @@ class LatentMASMethod:
                         {
                             "name": agent.name,
                             "role": agent.role,
+                            "meta_prompt": meta_role_prompts[idx].get(agent.role, "") if self.args.prompt == "hierarchical" and agent.role != "judger" else "",
                             "input": wrapped_prompts[idx],
                             "input_ids": trimmed_ids,
                             "input_tokens": wrapped_tokens_batch[idx],

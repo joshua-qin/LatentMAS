@@ -94,6 +94,7 @@ def main():
     parser.add_argument("--task", choices=["gsm8k", "aime2024", "aime2025", "gpqa", "arc_easy", "arc_challenge", "mbppplus", 'humanevalplus', 'medqa'], default="gsm8k",
                         help="Dataset/task to evaluate. Controls which loader is used.")
     parser.add_argument("--prompt", type=str, choices=["sequential", "hierarchical"], default="sequential", help="Multi-agent system architecture: 'sequential' or 'hierarchical'.")
+    parser.add_argument("--use_meta_prompt_generator", action="store_true", help="For hierarchical latent_mas, run one meta-agent LLM call per question to generate diverse worker prompts.")
 
     # other args
     parser.add_argument("--device", type=str, default="cuda")
