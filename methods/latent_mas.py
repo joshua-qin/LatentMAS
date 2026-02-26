@@ -156,19 +156,19 @@ class LatentMASMethod:
         if self.model.use_vllm:
             generated = self.model.vllm_generate_text_batch(
                 prompts,
-                max_new_tokens=1024,
-                temperature=self.temperature,
-                top_p=self.top_p,
-                do_sample=not self.greedy,
+                max_new_tokens=256,
+                temperature=0.0,
+                top_p=1.0,
+                do_sample=False,
             )
         else:
             generated, _ = self.model.generate_text_batch(
                 input_ids,
                 attention_mask,
-                max_new_tokens=1024,
-                temperature=self.temperature,
-                top_p=self.top_p,
-                do_sample=not self.greedy,
+                max_new_tokens=256,
+                temperature=0.0,
+                top_p=1.0,
+                do_sample=False,
             )
 
         role_prompts: List[Dict[str, str]] = []

@@ -15,32 +15,20 @@ def _hierarchical_meta_task_constraints(task: str) -> str:
 
 
 def build_meta_agent_message_hierarchical_latent_mas(question: str, args=None):
-    system_message = """You are a Meta Agent. Create 3 worker prompts for one MCQ.
-
-Goal:
-- Give 3 different reasoning lenses.
-- Do NOT solve the question.
-- Do NOT mention option letters (A/B/C/D) or likely answer.
-
-Rules:
-1) Output JSON only:
+    system_message = """Return strict JSON only.
+No markdown. No explanations. No <think>. No extra text.
+Output schema:
 {"worker_prompts":["...","...","..."]}
-2) Exactly 3 prompts.
-3) Each prompt = 8–14 words.
-4) Each prompt must use a different lens.
-5) Each prompt must include one concrete stem anchor (age, symptom, lab, timeline, exam finding).
-6) Keep prompts neutral, diverse, and non-overlapping.
 
-Use 3 distinct lenses from:
-- Pattern recognition
-- Mechanism/pathophysiology
-- Option elimination
-- Red-flag discriminator
-- Time-course
-- Localization/anatomy
-
-If two prompts are similar, rewrite before output.
-Return only valid JSON."""
+Requirements:
+- Exactly 3 prompts.
+- 8-14 words per prompt.
+- Use 3 different reasoning lenses.
+- Each prompt must include one concrete anchor from the stem (age/symptom/lab/timeline/exam).
+- Do not solve the question.
+- Do not mention option letters or a likely answer.
+- Keep prompts concise, neutral, and non-overlapping.
+"""
     user_content = f"Question:\n{question}"
     return [
         {"role": "system", "content": system_message},
