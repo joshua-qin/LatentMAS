@@ -15,27 +15,33 @@ def _hierarchical_meta_task_constraints(task: str) -> str:
 
 
 def build_meta_agent_message_hierarchical_latent_mas(question: str, args=None):
-    system_message = "You are a meta-prompt generator. Output JSON only."
-    schema = {"worker_prompts": ["prompt for worker 1", "prompt for worker 2", "prompt for worker 3"]}
-    user_content = f"""
-Task:
-Given one question, create 3 different reasoning lenses for 3 independent worker agents.
+    system_message = """You are a Meta Agent. Create 3 worker prompts for one MCQ.
 
-Output format (strict):
-{json.dumps(schema)}
+Goal:
+- Give 3 different reasoning lenses.
+- Do NOT solve the question.
+- Do NOT mention option letters (A/B/C/D) or likely answer.
 
 Rules:
-- Output a single valid JSON object only; no preamble, no analysis, no <think>, no markdown.
-- Exactly 3 strings in `worker_prompts`.
-- Each string must be 8-18 words, single paragraph.
-- Each string must include at least 1 concrete detail from the question.
-- Make the prompts meaningfully different in perspective and reasoning style.
-- Prompts must be non-overlapping; avoid paraphrasing the same strategy.
-- Do not state or imply the final answer or option letter.
+1) Output JSON only:
+{"worker_prompts":["...","...","..."]}
+2) Exactly 3 prompts.
+3) Each prompt = 8–14 words.
+4) Each prompt must use a different lens.
+5) Each prompt must include one concrete stem anchor (age, symptom, lab, timeline, exam finding).
+6) Keep prompts neutral, diverse, and non-overlapping.
 
-Question:
-{question}
-"""
+Use 3 distinct lenses from:
+- Pattern recognition
+- Mechanism/pathophysiology
+- Option elimination
+- Red-flag discriminator
+- Time-course
+- Localization/anatomy
+
+If two prompts are similar, rewrite before output.
+Return only valid JSON."""
+    user_content = f"Question:\n{question}"
     return [
         {"role": "system", "content": system_message},
         {"role": "user", "content": user_content},

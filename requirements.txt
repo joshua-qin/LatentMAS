@@ -7,5 +7,3 @@ pillow
 torch
 tqdm
 transformers
-vllm
-
