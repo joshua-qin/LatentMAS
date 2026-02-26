@@ -150,13 +150,22 @@ class LatentMASMethod:
             build_meta_agent_message_hierarchical_latent_mas(question=item["question"], args=self.args)
             for item in items
         ]
-        prompts, input_ids, attention_mask, _ = self.model.prepare_chat_batch(
-            batch_messages, add_generation_prompt=True
-        )
+        # Meta generation: no_think (enable_thinking=False) and max_tokens=512
+        prepare_kwargs = {"enable_thinking": False}
+        try:
+            prompts, input_ids, attention_mask, _ = self.model.prepare_chat_batch(
+                batch_messages, add_generation_prompt=True, **prepare_kwargs
+            )
+        except TypeError:
+            # Tokenizer does not support enable_thinking (e.g. non-Qwen3)
+            prompts, input_ids, attention_mask, _ = self.model.prepare_chat_batch(
+                batch_messages, add_generation_prompt=True
+            )
+        meta_max_tokens = 512
         if self.model.use_vllm:
             generated = self.model.vllm_generate_text_batch(
                 prompts,
-                max_new_tokens=256,
+                max_new_tokens=meta_max_tokens,
                 temperature=0.0,
                 top_p=1.0,
                 do_sample=False,
@@ -165,7 +174,7 @@ class LatentMASMethod:
             generated, _ = self.model.generate_text_batch(
                 input_ids,
                 attention_mask,
-                max_new_tokens=256,
+                max_new_tokens=meta_max_tokens,
                 temperature=0.0,
                 top_p=1.0,
                 do_sample=False,

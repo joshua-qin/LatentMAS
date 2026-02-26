@@ -101,11 +101,19 @@ class ModelWrapper:
         if self.latent_space_realign:
             self._ensure_latent_realign_matrix(self.model, self.device, args)
 
-    def render_chat(self, messages: List[Dict], add_generation_prompt: bool = True) -> str:
+    def render_chat(
+        self,
+        messages: List[Dict],
+        add_generation_prompt: bool = True,
+        **chat_template_kwargs,
+    ) -> str:
         tpl = getattr(self.tokenizer, "chat_template", None)
         if tpl:
             return self.tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=add_generation_prompt
+                messages,
+                tokenize=False,
+                add_generation_prompt=add_generation_prompt,
+                **chat_template_kwargs,
             )
         segments = []
         for message in messages:
@@ -117,9 +125,16 @@ class ModelWrapper:
         return "\n".join(segments)
 
     def prepare_chat_input(
-        self, messages: List[Dict], add_generation_prompt: bool = True
+        self,
+        messages: List[Dict],
+        add_generation_prompt: bool = True,
+        **chat_template_kwargs,
     ) -> Tuple[str, torch.Tensor, torch.Tensor, List[str]]:
-        prompt_text = self.render_chat(messages, add_generation_prompt=add_generation_prompt)
+        prompt_text = self.render_chat(
+            messages,
+            add_generation_prompt=add_generation_prompt,
+            **chat_template_kwargs,
+        )
         encoded = self.tokenizer(
             prompt_text,
             return_tensors="pt",
@@ -135,10 +150,17 @@ class ModelWrapper:
         self,
         batch_messages: List[List[Dict]],
         add_generation_prompt: bool = True,
+        **chat_template_kwargs,
     ) -> Tuple[List[str], torch.Tensor, torch.Tensor, List[List[str]]]:
         prompts: List[str] = []
         for messages in batch_messages:
-            prompts.append(self.render_chat(messages, add_generation_prompt=add_generation_prompt))
+            prompts.append(
+                self.render_chat(
+                    messages,
+                    add_generation_prompt=add_generation_prompt,
+                    **chat_template_kwargs,
+                )
+            )
         encoded = self.tokenizer(
             prompts,
             return_tensors="pt",
