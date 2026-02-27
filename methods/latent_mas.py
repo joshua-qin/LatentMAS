@@ -61,6 +61,125 @@ class LatentMASMethod:
         else:
             self.sampling_params = None
         self.task = args.task
+        self._choice_token_id_cache: Optional[Dict[str, int]] = None
+
+    def _get_probe_model_and_device(self):
+        if hasattr(self.model, "model"):
+            return self.model.model, self.model.device
+        if hasattr(self.model, "HF_model"):
+            return self.model.HF_model, self.model.HF_device
+        return None, None
+
+    def _get_choice_token_ids(self) -> Dict[str, int]:
+        if self._choice_token_id_cache is not None:
+            return self._choice_token_id_cache
+
+        tokenizer = self.model.tokenizer
+        token_ids: Dict[str, int] = {}
+        for label in ["A", "B", "C", "D"]:
+            chosen_id: Optional[int] = None
+            for variant in [label, f" {label}", label.lower(), f" {label.lower()}"]:
+                ids = tokenizer(variant, add_special_tokens=False)["input_ids"]
+                if len(ids) == 1:
+                    chosen_id = int(ids[0])
+                    break
+            if chosen_id is None:
+                fallback_ids = tokenizer(label, add_special_tokens=False)["input_ids"]
+                if not fallback_ids:
+                    raise ValueError(f"Unable to map choice token id for label '{label}'")
+                chosen_id = int(fallback_ids[0])
+            token_ids[label.lower()] = chosen_id
+
+        self._choice_token_id_cache = token_ids
+        return token_ids
+
+    @torch.no_grad()
+    def _score_choice_logits_from_cache(
+        self,
+        past_kv: Optional[Tuple],
+        past_kv_mask: Optional[torch.Tensor],
+        batch_size: int,
+    ) -> List[Dict[str, Dict[str, float]]]:
+        if past_kv is None:
+            return [
+                {
+                    "choice_logits": {"a": float("nan"), "b": float("nan"), "c": float("nan"), "d": float("nan")},
+                    "choice_probs": {"a": float("nan"), "b": float("nan"), "c": float("nan"), "d": float("nan")},
+                }
+                for _ in range(batch_size)
+            ]
+
+        probe_model, probe_device = self._get_probe_model_and_device()
+        if probe_model is None:
+            return [
+                {
+                    "choice_logits": {"a": float("nan"), "b": float("nan"), "c": float("nan"), "d": float("nan")},
+                    "choice_probs": {"a": float("nan"), "b": float("nan"), "c": float("nan"), "d": float("nan")},
+                }
+                for _ in range(batch_size)
+            ]
+
+        probe_text = "\nAnswer with exactly one letter: A, B, C, or D.\nAnswer: "
+        probe_batch = [probe_text] * batch_size
+        probe_encoded = self.model.tokenizer(
+            probe_batch,
+            return_tensors="pt",
+            padding=True,
+            add_special_tokens=False,
+        )
+        probe_ids = probe_encoded["input_ids"].to(probe_device)
+        probe_mask = probe_encoded["attention_mask"].to(probe_device)
+
+        past_len = _past_length(past_kv)
+        if past_len > 0:
+            if past_kv_mask is None:
+                prefix_mask = torch.ones(
+                    (batch_size, past_len),
+                    dtype=probe_mask.dtype,
+                    device=probe_mask.device,
+                )
+            else:
+                prefix_mask = past_kv_mask.to(device=probe_mask.device, dtype=probe_mask.dtype)
+                if prefix_mask.shape != (batch_size, past_len):
+                    raise ValueError("past_kv_mask shape mismatch for latent verifier probing")
+            full_mask = torch.cat([prefix_mask, probe_mask], dim=-1)
+        else:
+            full_mask = probe_mask
+
+        outputs = probe_model(
+            input_ids=probe_ids,
+            attention_mask=full_mask,
+            past_key_values=past_kv,
+            use_cache=False,
+            return_dict=True,
+        )
+        next_token_logits = outputs.logits[:, -1, :]
+
+        choice_ids = self._get_choice_token_ids()
+        ordered = ["a", "b", "c", "d"]
+        choice_logits_tensor = torch.stack(
+            [next_token_logits[:, choice_ids[label]] for label in ordered],
+            dim=-1,
+        )
+        choice_probs_tensor = torch.softmax(choice_logits_tensor, dim=-1)
+
+        records: List[Dict[str, Dict[str, float]]] = []
+        for row_idx in range(batch_size):
+            logits_row = choice_logits_tensor[row_idx]
+            probs_row = choice_probs_tensor[row_idx]
+            records.append(
+                {
+                    "choice_logits": {
+                        label: float(logits_row[col_idx].item())
+                        for col_idx, label in enumerate(ordered)
+                    },
+                    "choice_probs": {
+                        label: float(probs_row[col_idx].item())
+                        for col_idx, label in enumerate(ordered)
+                    },
+                }
+            )
+        return records
 
     @staticmethod
     def _default_meta_prompts(worker_roles: List[str]) -> Dict[str, str]:
@@ -319,6 +438,12 @@ class LatentMASMethod:
                     else:
                         past_kv_mask = past_kv_mask[:, -tokens_to_keep:].contiguous()
 
+                verifier_scores = self._score_choice_logits_from_cache(
+                    past_kv=past_kv,
+                    past_kv_mask=past_kv_mask,
+                    batch_size=batch_size,
+                )
+
                 for idx in range(batch_size):
                     mask = wrapped_mask[idx].bool()
                     trimmed_ids = wrapped_ids[idx][mask].to("cpu").tolist()
@@ -331,6 +456,8 @@ class LatentMASMethod:
                             "input_ids": trimmed_ids,
                             "input_tokens": wrapped_tokens_batch[idx],
                             "latent_steps": self.latent_steps,
+                            "choice_logits": verifier_scores[idx]["choice_logits"],
+                            "choice_probs": verifier_scores[idx]["choice_probs"],
                             "output": "",
                         }
                     )
@@ -515,6 +642,12 @@ class LatentMASMethod:
 
                 if self.sequential_info_only or self.latent_only:
                     embedding_record = embedding_record[-1:]
+
+                verifier_scores = self._score_choice_logits_from_cache(
+                    past_kv=past_kv,
+                    past_kv_mask=None,
+                    batch_size=batch_size,
+                )
                 
                 for idx in range(batch_size):
                     mask = wrapped_mask[idx].bool()
@@ -528,6 +661,8 @@ class LatentMASMethod:
                             "input_ids": trimmed_ids,
                             "input_tokens": wrapped_tokens_batch[idx],
                             "latent_steps": self.latent_steps,
+                            "choice_logits": verifier_scores[idx]["choice_logits"],
+                            "choice_probs": verifier_scores[idx]["choice_probs"],
                             "output": "",
                         }
                     )

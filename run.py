@@ -77,11 +77,19 @@ def process_batch(
             agent_input = a.get("input", "").rstrip()
             agent_output = a.get("output", "").rstrip()
             latent_steps = a.get("latent_steps", None)
+            choice_logits = a.get("choice_logits")
+            choice_probs = a.get("choice_probs")
             print("[To Tokenize]")
             print(agent_input)
             if latent_steps is not None:
                 print("[Latent Steps]")
                 print(latent_steps)
+            if isinstance(choice_logits, dict):
+                print("[Choice Logits]")
+                print(json.dumps(choice_logits, ensure_ascii=False))
+            if isinstance(choice_probs, dict):
+                print("[Choice Probs]")
+                print(json.dumps(choice_probs, ensure_ascii=False))
             print("[Output]")
             print(agent_output)
             print("----------------------------------------------")
