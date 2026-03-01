@@ -302,19 +302,16 @@ class ModelWrapper:
                 device=self.device,
             )
             if past_len > 0:
-                if past_attention_mask is None:
+                # Use provided past mask (0/1 for padding) when given; else all 1s (no padding in past).
+                if past_attention_mask is not None and past_attention_mask.shape == (attention_mask.shape[0], past_len):
+                    past_mask = past_attention_mask.to(
+                        device=attention_mask.device, dtype=attention_mask.dtype
+                    )
+                else:
                     past_mask = torch.ones(
                         (attention_mask.shape[0], past_len),
                         dtype=attention_mask.dtype,
                         device=attention_mask.device,
-                    )
-                else:
-                    if past_attention_mask.shape != (attention_mask.shape[0], past_len):
-                        raise ValueError(
-                            "past_attention_mask shape must match (batch_size, past_len)"
-                        )
-                    past_mask = past_attention_mask.to(
-                        device=attention_mask.device, dtype=attention_mask.dtype
                     )
                 attention_mask = torch.cat([past_mask, attention_mask], dim=-1)
         generate_kwargs = dict(
@@ -374,19 +371,16 @@ class ModelWrapper:
         if past_key_values is not None:
             past_len = _past_length(past_key_values)
             if past_len > 0:
-                if past_attention_mask is None:
+                # Use provided past mask (0/1 for left-padding) when given; else all 1s.
+                if past_attention_mask is not None and past_attention_mask.shape == (attention_mask.shape[0], past_len):
+                    past_mask = past_attention_mask.to(
+                        device=attention_mask.device, dtype=attention_mask.dtype
+                    )
+                else:
                     past_mask = torch.ones(
                         (attention_mask.shape[0], past_len),
                         dtype=attention_mask.dtype,
                         device=attention_mask.device,
-                    )
-                else:
-                    if past_attention_mask.shape != (attention_mask.shape[0], past_len):
-                        raise ValueError(
-                            "past_attention_mask shape must match (batch_size, past_len)"
-                        )
-                    past_mask = past_attention_mask.to(
-                        device=attention_mask.device, dtype=attention_mask.dtype
                     )
                 attention_mask = torch.cat([past_mask, attention_mask], dim=-1)
         if position_offset is not None:

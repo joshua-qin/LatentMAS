@@ -1,9 +1,9 @@
-accelerate
-datasets
+accelerate>=1.12.0
+datasets>=4.5.0
 jinja2>=3.1.0
-matplotlib
-numpy
-pillow
-torch
-tqdm
-transformers
+matplotlib>=3.10.0
+numpy>=2.2.0
+pillow>=12.1.0
+torch>=2.10.0
+tqdm>=4.67.0
+transformers>=5.2.0

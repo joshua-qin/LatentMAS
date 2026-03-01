@@ -16,9 +16,10 @@ import argparse
 import pdb
 
 try:
-    from transformers.cache_utils import Cache
+    from transformers.cache_utils import Cache, DynamicCache
 except ImportError:
     Cache = None
+    DynamicCache = None
 
 class LatentMASMethod:
     def __init__(
@@ -133,28 +134,25 @@ class LatentMASMethod:
 
         past_len = _past_length(past_kv)
         if past_len > 0:
-            if past_kv_mask is None:
+            # Use provided past mask (0/1 for left-padding) so we don't attend to padding.
+            if past_kv_mask is not None and past_kv_mask.shape == (batch_size, past_len):
+                prefix_mask = past_kv_mask.to(device=probe_mask.device, dtype=probe_mask.dtype)
+            else:
                 prefix_mask = torch.ones(
                     (batch_size, past_len),
                     dtype=probe_mask.dtype,
                     device=probe_mask.device,
                 )
-            else:
-                prefix_mask = past_kv_mask.to(device=probe_mask.device, dtype=probe_mask.dtype)
-                if prefix_mask.shape != (batch_size, past_len):
-                    raise ValueError("past_kv_mask shape mismatch for latent verifier probing")
             full_mask = torch.cat([prefix_mask, probe_mask], dim=-1)
         else:
             full_mask = probe_mask
 
-        # Never probe with the live cache object directly.
-        # Some cache implementations can be updated in-place during forward passes,
-        # which would desync past_len vs past_attention_mask for the next worker step.
+        # Never probe with the live cache: clone so probe forward or cache APIs don't mutate it.
         try:
-            past_for_probe = self._truncate_past(past_kv, past_len)
-        except (AttributeError, TypeError, NotImplementedError):
-            # Transformers cache APIs differ across versions; fallback is a safe full clone.
             past_for_probe = copy.deepcopy(past_kv)
+        except (AttributeError, TypeError, NotImplementedError):
+            # Some cache types don't deepcopy; truncate returns new tuple for legacy caches (DynamicCache mutates in place).
+            past_for_probe = self._truncate_past(past_kv, past_len)
 
         outputs = probe_model(
             input_ids=probe_ids,
@@ -342,12 +340,17 @@ class LatentMASMethod:
         if past_kv is None or tokens_to_keep <= 0:
             return None
         if Cache is not None and isinstance(past_kv, Cache):
-            legacy = past_kv.to_legacy_cache()
-            trimmed_legacy = tuple(
-                tuple(self._slice_tensor(t, tokens_to_keep) for t in layer)
-                for layer in legacy
-            )
-            return past_kv.__class__.from_legacy_cache(trimmed_legacy)
+            # transformers 5.x: to_legacy_cache/from_legacy_cache removed; manually truncate layers
+            for layer in past_kv.layers:
+                if layer.get_seq_length() <= 0:
+                    continue
+                keep = min(tokens_to_keep, layer.get_seq_length())
+                start = layer.get_seq_length() - keep
+                layer.keys = layer.keys[..., start:, :].contiguous()
+                layer.values = layer.values[..., start:, :].contiguous()
+                if hasattr(layer, "cumulative_length"):
+                    layer.cumulative_length = keep
+            return past_kv
         trimmed_layers = []
         for layer in past_kv:
             if isinstance(layer, tuple):
@@ -363,13 +366,15 @@ class LatentMASMethod:
         if past_kv is None:
             return None
         if Cache is not None and isinstance(past_kv, Cache):
-            return past_kv.to_legacy_cache()
+            # transformers 5.x: to_legacy_cache removed; extract (k, v) from each layer
+            return tuple((layer.keys, layer.values) for layer in past_kv.layers)
         return past_kv
 
     @staticmethod
     def _from_legacy_cache(reference, legacy_cache):
-        if Cache is not None and isinstance(reference, Cache):
-            return reference.__class__.from_legacy_cache(legacy_cache)
+        if Cache is not None and isinstance(reference, Cache) and DynamicCache is not None:
+            # transformers 5.x: from_legacy_cache removed; use DynamicCache(ddp_cache_data=...)
+            return DynamicCache(ddp_cache_data=legacy_cache)
         return tuple(legacy_cache)
 
     def _concat_past_key_values(self, caches: List[Optional[Tuple]]) -> Optional[Tuple]:
@@ -407,6 +412,7 @@ class LatentMASMethod:
         dtype: torch.dtype,
         device: torch.device,
     ) -> Optional[torch.Tensor]:
+        """Concatenate per-worker past masks (same order as caches). Each mask must have shape (batch_size, _past_length(cache))."""
         segments: List[torch.Tensor] = []
         for cache, mask in zip(caches, masks):
             if cache is None:
@@ -416,10 +422,12 @@ class LatentMASMethod:
                 continue
             if mask is None:
                 segments.append(torch.ones((batch_size, cache_len), dtype=dtype, device=device))
-                continue
-            if mask.shape != (batch_size, cache_len):
-                raise ValueError("hierarchical worker mask shape mismatch when concatenating past masks")
-            segments.append(mask.to(device=device, dtype=dtype))
+            else:
+                if mask.shape != (batch_size, cache_len):
+                    raise ValueError(
+                        f"worker mask shape must be (batch_size={batch_size}, cache_len={cache_len}), got {mask.shape}"
+                    )
+                segments.append(mask.to(device=device, dtype=dtype))
         if not segments:
             return None
         return torch.cat(segments, dim=-1)
@@ -505,17 +513,19 @@ class LatentMASMethod:
                     past_attention_mask=base_past_kv_mask,
                     position_offset=worker_position_offset,
                 )
-                latent_append = torch.ones(
-                    (batch_size, self.latent_steps),
-                    dtype=wrapped_mask.dtype,
-                    device=wrapped_mask.device,
-                )
+                # Build past mask in lockstep with cache: same inputs (base + wrapped + latent).
                 if base_past_kv_mask is None:
                     worker_past_kv_mask = wrapped_mask
                 else:
                     worker_past_kv_mask = torch.cat([base_past_kv_mask, wrapped_mask], dim=-1)
                 if self.latent_steps > 0:
+                    latent_append = torch.ones(
+                        (batch_size, self.latent_steps),
+                        dtype=worker_past_kv_mask.dtype,
+                        device=worker_past_kv_mask.device,
+                    )
                     worker_past_kv_mask = torch.cat([worker_past_kv_mask, latent_append], dim=-1)
+
                 if self.sequential_info_only or self.latent_only:
                     new_past_len = _past_length(worker_past_kv)
                     tokens_added = new_past_len - prev_past_len
