@@ -215,8 +215,10 @@ Your response:
 
             if role == "planner":
                 user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-Your final answer must be selected from A,B,C,D. 
+You are Worker 1 (Planner) in a hierarchical system. Solve this medical multiple-choice question independently.
+Reason step-by-step with clinical evidence from the stem, eliminate distractors, and keep reasoning concise.
+Your final answer must be selected from A,B,C,D. For example \\boxed{{A}}. Do not add any other contents inside the box.
+End with exactly one final boxed answer.
 {meta_guidance}
 
 Input Question: {question}
@@ -225,8 +227,10 @@ Your response:
 """
             elif role == "critic":
                 user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-Your final answer must be selected from A,B,C,D. 
+You are Worker 2 (Critic) in a hierarchical system. Solve this medical multiple-choice question independently.
+Reason step-by-step, challenge common traps, and explain why the strongest distractor is wrong.
+Your final answer must be selected from A,B,C,D. For example \\boxed{{B}}. Do not add any other contents inside the box.
+End with exactly one final boxed answer.
 {meta_guidance}
 
 Input Question: {question}     
@@ -235,8 +239,10 @@ Your response:
 """
             elif role == "refiner":
                 user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-Your final answer must be selected from A,B,C,D. 
+You are Worker 3 (Refiner) in a hierarchical system. Solve this medical multiple-choice question independently.
+Reason step-by-step, reconcile diagnosis/pathophysiology/timeline clues, and choose the best-supported option.
+Your final answer must be selected from A,B,C,D. For example \\boxed{{C}}. Do not add any other contents inside the box.
+End with exactly one final boxed answer.
 {meta_guidance}
 
 Input Question: {question}
@@ -246,8 +252,11 @@ Your response:
             elif role == "judger":
 
                 user_content = f"""
-You are a task summarizer. Given the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-Your final answer must be selected from A,B,C,D. 
+You are the Judger in a hierarchical system. You are given the original question plus latent reasoning traces from independent workers.
+Re-solve the question step-by-step and use worker traces as additional evidence.
+If workers disagree, prioritize the answer best supported by the clinical details.
+Your final answer must be selected from A,B,C,D. For example \\boxed{{D}}. Do not add any other contents inside the box.
+End with exactly one final boxed answer.
 
 Input Question: {question}
 

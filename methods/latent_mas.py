@@ -536,31 +536,55 @@ class LatentMASMethod:
                     else:
                         worker_past_kv_mask = worker_past_kv_mask[:, -tokens_to_keep:].contiguous()
 
+                worker_shared_past_kv = worker_past_kv
+                worker_shared_past_kv_mask = worker_past_kv_mask
                 if hierarchical_mode:
+                    # In hierarchical mode, keep full KV (for positional consistency) but expose
+                    # only the worker's latent reasoning via attention mask.
+                    reasoning_tokens_to_keep = max(0, int(self.latent_steps))
+                    full_worker_len = _past_length(worker_past_kv)
+                    if full_worker_len <= 0:
+                        worker_shared_past_kv_mask = None
+                    else:
+                        if worker_past_kv_mask is not None and worker_past_kv_mask.shape == (batch_size, full_worker_len):
+                            base_mask = worker_past_kv_mask.to(
+                                device=wrapped_mask.device, dtype=wrapped_mask.dtype
+                            )
+                        else:
+                            base_mask = torch.ones(
+                                (batch_size, full_worker_len),
+                                dtype=wrapped_mask.dtype,
+                                device=wrapped_mask.device,
+                            )
+                        worker_shared_past_kv_mask = torch.zeros_like(base_mask)
+                        if reasoning_tokens_to_keep > 0:
+                            keep = min(reasoning_tokens_to_keep, full_worker_len)
+                            worker_shared_past_kv_mask[:, -keep:] = base_mask[:, -keep:]
+
                     if worker_position_offset is not None:
+                        # Offset must advance by the full worker positional span.
                         if worker_past_kv_mask is not None:
                             worker_token_counts = worker_past_kv_mask.sum(dim=-1).to(
                                 device=hierarchical_position_offset.device,
                                 dtype=hierarchical_position_offset.dtype,
                             )
                         else:
-                            worker_len = _past_length(worker_past_kv)
                             worker_token_counts = torch.full(
                                 (batch_size,),
-                                worker_len,
+                                full_worker_len,
                                 device=hierarchical_position_offset.device,
                                 dtype=hierarchical_position_offset.dtype,
                             )
                         hierarchical_position_offset = hierarchical_position_offset + worker_token_counts
-                    hierarchical_worker_caches.append(worker_past_kv)
-                    hierarchical_worker_masks.append(worker_past_kv_mask)
+                    hierarchical_worker_caches.append(worker_shared_past_kv)
+                    hierarchical_worker_masks.append(worker_shared_past_kv_mask)
                 else:
                     past_kv = worker_past_kv
                     past_kv_mask = worker_past_kv_mask
 
                 verifier_scores = self._score_choice_logits_from_cache(
-                    past_kv=worker_past_kv,
-                    past_kv_mask=worker_past_kv_mask,
+                    past_kv=worker_shared_past_kv,
+                    past_kv_mask=worker_shared_past_kv_mask,
                     batch_size=batch_size,
                 )
 
@@ -781,6 +805,26 @@ class LatentMASMethod:
                     else:
                         previous_hidden_embedding = previous_hidden_embedding[:, 0:0, :]
 
+                worker_shared_past_kv = worker_past_kv
+                worker_shared_past_kv_mask = None
+                if hierarchical_mode:
+                    reasoning_tokens_to_keep = max(0, int(self.latent_steps))
+                    full_worker_len = _past_length(worker_past_kv)
+                    if full_worker_len > 0:
+                        worker_shared_past_kv_mask = torch.zeros(
+                            (batch_size, full_worker_len),
+                            dtype=wrapped_mask.dtype,
+                            device=wrapped_mask.device,
+                        )
+                        if reasoning_tokens_to_keep > 0:
+                            keep = min(reasoning_tokens_to_keep, full_worker_len)
+                            worker_shared_past_kv_mask[:, -keep:] = 1
+                            previous_hidden_embedding = previous_hidden_embedding[:, -keep:, :]
+                        else:
+                            previous_hidden_embedding = previous_hidden_embedding[:, 0:0, :]
+                    else:
+                        previous_hidden_embedding = previous_hidden_embedding[:, 0:0, :]
+
                 embedding_record.append(previous_hidden_embedding)
 
                 if (self.sequential_info_only or self.latent_only) and not hierarchical_mode:
@@ -789,22 +833,19 @@ class LatentMASMethod:
                 if not hierarchical_mode:
                     past_kv = worker_past_kv
                 elif worker_position_offset is not None:
-                    worker_token_counts = wrapped_mask.sum(dim=-1).to(
+                    # Offset must advance by the full worker positional span.
+                    worker_len = _past_length(worker_past_kv)
+                    worker_token_counts = torch.full(
+                        (batch_size,),
+                        worker_len,
                         device=hierarchical_position_offset.device,
                         dtype=hierarchical_position_offset.dtype,
-                    ) + int(self.latent_steps)
-                    if self.sequential_info_only:
-                        if self.latent_only:
-                            keep_counts = torch.full_like(worker_token_counts, int(self.latent_steps))
-                        else:
-                            worker_len = _past_length(worker_past_kv)
-                            keep_counts = torch.full_like(worker_token_counts, int(worker_len))
-                        worker_token_counts = torch.minimum(worker_token_counts, keep_counts)
+                    )
                     hierarchical_position_offset = hierarchical_position_offset + worker_token_counts
 
                 verifier_scores = self._score_choice_logits_from_cache(
-                    past_kv=worker_past_kv,
-                    past_kv_mask=None,
+                    past_kv=worker_shared_past_kv,
+                    past_kv_mask=worker_shared_past_kv_mask,
                     batch_size=batch_size,
                 )
                 
