@@ -1,5 +1,6 @@
 import json
 import re
+import copy
 from typing import Dict, List, Optional, Tuple
 
 from . import default_agents
@@ -146,10 +147,19 @@ class LatentMASMethod:
         else:
             full_mask = probe_mask
 
+        # Never probe with the live cache object directly.
+        # Some cache implementations can be updated in-place during forward passes,
+        # which would desync past_len vs past_attention_mask for the next worker step.
+        try:
+            past_for_probe = self._truncate_past(past_kv, past_len)
+        except (AttributeError, TypeError, NotImplementedError):
+            # Transformers cache APIs differ across versions; fallback is a safe full clone.
+            past_for_probe = copy.deepcopy(past_kv)
+
         outputs = probe_model(
             input_ids=probe_ids,
             attention_mask=full_mask,
-            past_key_values=past_kv,
+            past_key_values=past_for_probe,
             use_cache=False,
             return_dict=True,
         )
