@@ -358,14 +358,86 @@ class LatentMASMethod:
                 trimmed_layers.append(layer)
         return tuple(trimmed_layers)
 
+    @staticmethod
+    def _to_legacy_cache(past_kv):
+        if past_kv is None:
+            return None
+        if Cache is not None and isinstance(past_kv, Cache):
+            return past_kv.to_legacy_cache()
+        return past_kv
+
+    @staticmethod
+    def _from_legacy_cache(reference, legacy_cache):
+        if Cache is not None and isinstance(reference, Cache):
+            return reference.__class__.from_legacy_cache(legacy_cache)
+        return tuple(legacy_cache)
+
+    def _concat_past_key_values(self, caches: List[Optional[Tuple]]) -> Optional[Tuple]:
+        valid_caches = [cache for cache in caches if cache is not None and _past_length(cache) > 0]
+        if not valid_caches:
+            return None
+
+        legacy_caches = [self._to_legacy_cache(cache) for cache in valid_caches]
+        num_layers = len(legacy_caches[0])
+        concatenated_layers = []
+        for layer_idx in range(num_layers):
+            layer_group = [legacy[layer_idx] for legacy in legacy_caches]
+            first_layer = layer_group[0]
+            if isinstance(first_layer, tuple):
+                tensor_count = len(first_layer)
+                concatenated_layers.append(
+                    tuple(
+                        torch.cat([layer[t_idx] for layer in layer_group], dim=-2)
+                        for t_idx in range(tensor_count)
+                    )
+                )
+            elif torch.is_tensor(first_layer):
+                concatenated_layers.append(torch.cat(layer_group, dim=-2))
+            else:
+                raise TypeError("Unsupported cache layer type during hierarchical concatenation.")
+
+        concatenated_legacy = tuple(concatenated_layers)
+        return self._from_legacy_cache(valid_caches[0], concatenated_legacy)
+
+    def _concat_past_attention_masks(
+        self,
+        caches: List[Optional[Tuple]],
+        masks: List[Optional[torch.Tensor]],
+        batch_size: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> Optional[torch.Tensor]:
+        segments: List[torch.Tensor] = []
+        for cache, mask in zip(caches, masks):
+            if cache is None:
+                continue
+            cache_len = _past_length(cache)
+            if cache_len <= 0:
+                continue
+            if mask is None:
+                segments.append(torch.ones((batch_size, cache_len), dtype=dtype, device=device))
+                continue
+            if mask.shape != (batch_size, cache_len):
+                raise ValueError("hierarchical worker mask shape mismatch when concatenating past masks")
+            segments.append(mask.to(device=device, dtype=dtype))
+        if not segments:
+            return None
+        return torch.cat(segments, dim=-1)
+
     @torch.no_grad()
     def run_batch(self, items: List[Dict]) -> List[Dict]:
         if len(items) > self.generate_bs:
             raise ValueError("Batch size exceeds configured generate_bs")
 
         batch_size = len(items)
+        hierarchical_mode = self.args.prompt == "hierarchical"
         past_kv: Optional[Tuple] = None
         past_kv_mask: Optional[torch.Tensor] = None
+        hierarchical_worker_caches: List[Optional[Tuple]] = []
+        hierarchical_worker_masks: List[Optional[torch.Tensor]] = []
+        hierarchical_position_offset = torch.zeros(
+            batch_size, dtype=torch.long, device=self.model.device
+        )
         agent_traces: List[List[Dict]] = [[] for _ in range(batch_size)]
         final_texts = ["" for _ in range(batch_size)]
         meta_role_prompts, meta_debug = self._generate_hierarchical_meta_prompts(items)
@@ -400,7 +472,12 @@ class LatentMASMethod:
             )
 
             if agent.role != "judger":
-                prev_past_len = _past_length(past_kv)
+                base_past_kv = None if hierarchical_mode else past_kv
+                base_past_kv_mask = None if hierarchical_mode else past_kv_mask
+                prev_past_len = _past_length(base_past_kv)
+                worker_position_offset = None
+                if hierarchical_mode and not self.latent_only:
+                    worker_position_offset = hierarchical_position_offset.clone()
 
                 if self.args.think:
                         wrapped_prompts = [f"{prompt}<think>" for prompt in prompts]
@@ -420,37 +497,60 @@ class LatentMASMethod:
                     active_ids = ids_row[mask_row.bool()].tolist()
                     wrapped_tokens_batch.append(self.model.tokenizer.convert_ids_to_tokens(active_ids))
 
-                past_kv = self.model.generate_latent_batch(
+                worker_past_kv = self.model.generate_latent_batch(
                     wrapped_ids,
                     attention_mask=wrapped_mask,
                     latent_steps=self.latent_steps,
-                    past_key_values=past_kv,
-                    past_attention_mask=past_kv_mask,
+                    past_key_values=base_past_kv,
+                    past_attention_mask=base_past_kv_mask,
+                    position_offset=worker_position_offset,
                 )
                 latent_append = torch.ones(
                     (batch_size, self.latent_steps),
                     dtype=wrapped_mask.dtype,
                     device=wrapped_mask.device,
                 )
-                if past_kv_mask is None:
-                    past_kv_mask = wrapped_mask
+                if base_past_kv_mask is None:
+                    worker_past_kv_mask = wrapped_mask
                 else:
-                    past_kv_mask = torch.cat([past_kv_mask, wrapped_mask], dim=-1)
+                    worker_past_kv_mask = torch.cat([base_past_kv_mask, wrapped_mask], dim=-1)
                 if self.latent_steps > 0:
-                    past_kv_mask = torch.cat([past_kv_mask, latent_append], dim=-1)
+                    worker_past_kv_mask = torch.cat([worker_past_kv_mask, latent_append], dim=-1)
                 if self.sequential_info_only or self.latent_only:
-                    new_past_len = _past_length(past_kv)
+                    new_past_len = _past_length(worker_past_kv)
                     tokens_added = new_past_len - prev_past_len
                     tokens_to_keep = self.latent_steps if self.latent_only else tokens_added
-                    past_kv = self._truncate_past(past_kv, tokens_to_keep)
+                    worker_past_kv = self._truncate_past(worker_past_kv, tokens_to_keep)
                     if tokens_to_keep <= 0:
-                        past_kv_mask = None
+                        worker_past_kv_mask = None
                     else:
-                        past_kv_mask = past_kv_mask[:, -tokens_to_keep:].contiguous()
+                        worker_past_kv_mask = worker_past_kv_mask[:, -tokens_to_keep:].contiguous()
+
+                if hierarchical_mode:
+                    if worker_position_offset is not None:
+                        if worker_past_kv_mask is not None:
+                            worker_token_counts = worker_past_kv_mask.sum(dim=-1).to(
+                                device=hierarchical_position_offset.device,
+                                dtype=hierarchical_position_offset.dtype,
+                            )
+                        else:
+                            worker_len = _past_length(worker_past_kv)
+                            worker_token_counts = torch.full(
+                                (batch_size,),
+                                worker_len,
+                                device=hierarchical_position_offset.device,
+                                dtype=hierarchical_position_offset.dtype,
+                            )
+                        hierarchical_position_offset = hierarchical_position_offset + worker_token_counts
+                    hierarchical_worker_caches.append(worker_past_kv)
+                    hierarchical_worker_masks.append(worker_past_kv_mask)
+                else:
+                    past_kv = worker_past_kv
+                    past_kv_mask = worker_past_kv_mask
 
                 verifier_scores = self._score_choice_logits_from_cache(
-                    past_kv=past_kv,
-                    past_kv_mask=past_kv_mask,
+                    past_kv=worker_past_kv,
+                    past_kv_mask=worker_past_kv_mask,
                     batch_size=batch_size,
                 )
 
@@ -472,9 +572,6 @@ class LatentMASMethod:
                         }
                     )
             else:
-
-                past_for_decoding = past_kv if self.latent_steps > 0 else None
-
                 if self.args.think:
                         judger_prompts = [f"{prompt}<think>" for prompt in prompts]
                 else: 
@@ -492,6 +589,23 @@ class LatentMASMethod:
                 for ids_row, mask_row in zip(judger_ids, judger_mask):
                     active_ids = ids_row[mask_row.bool()].tolist()
                     judger_tokens_batch.append(self.model.tokenizer.convert_ids_to_tokens(active_ids))
+
+                if hierarchical_mode:
+                    past_for_decoding = self._concat_past_key_values(hierarchical_worker_caches)
+                    past_for_decoding_mask = self._concat_past_attention_masks(
+                        hierarchical_worker_caches,
+                        hierarchical_worker_masks,
+                        batch_size=batch_size,
+                        dtype=judger_mask.dtype,
+                        device=judger_mask.device,
+                    )
+                else:
+                    past_for_decoding = past_kv
+                    past_for_decoding_mask = past_kv_mask
+                if self.latent_steps <= 0:
+                    past_for_decoding = None
+                    past_for_decoding_mask = None
+
                 generated_batch, _ = self.model.generate_text_batch(
                     judger_ids,
                     judger_mask,
@@ -500,7 +614,7 @@ class LatentMASMethod:
                     top_p=self.top_p,
                     do_sample=not self.greedy,
                     past_key_values=past_for_decoding,
-                    past_attention_mask=past_kv_mask if self.latent_steps > 0 else None,
+                    past_attention_mask=past_for_decoding_mask,
                 )
                 for idx in range(batch_size):
                     final_text = generated_batch[idx].strip()
@@ -574,10 +688,14 @@ class LatentMASMethod:
             raise ValueError("Batch size exceeds configured generate_bs")
 
         batch_size = len(items)
+        hierarchical_mode = self.args.prompt == "hierarchical"
         past_kv: Optional[Tuple] = None
         agent_traces: List[List[Dict]] = [[] for _ in range(batch_size)]
         final_texts = ["" for _ in range(batch_size)]
         meta_role_prompts, meta_debug = self._generate_hierarchical_meta_prompts(items)
+        hierarchical_position_offset = torch.zeros(
+            batch_size, dtype=torch.long, device=self.model.HF_device
+        )
 
         embedding_record = []
         for agent in self.agents:
@@ -609,7 +727,11 @@ class LatentMASMethod:
             )
 
             if agent.role != "judger":
-                prev_past_len = _past_length(past_kv)
+                base_past_kv = None if hierarchical_mode else past_kv
+                prev_past_len = _past_length(base_past_kv)
+                worker_position_offset = None
+                if hierarchical_mode and not self.latent_only:
+                    worker_position_offset = hierarchical_position_offset.clone()
 
                 # to wrap all latent thoughts from previous agents
                 if self.args.think:
@@ -630,17 +752,18 @@ class LatentMASMethod:
                     active_ids = ids_row[mask_row.bool()].tolist()
                     wrapped_tokens_batch.append(self.model.tokenizer.convert_ids_to_tokens(active_ids))
 
-                past_kv, previous_hidden_embedding = self.model.generate_latent_batch_hidden_state(
+                worker_past_kv, previous_hidden_embedding = self.model.generate_latent_batch_hidden_state(
                     wrapped_ids,
                     attention_mask=wrapped_mask,
                     latent_steps=self.latent_steps,
-                    past_key_values=past_kv,
+                    past_key_values=base_past_kv,
+                    position_offset=worker_position_offset,
                 )
                 if self.sequential_info_only or self.latent_only:
-                    new_past_len = _past_length(past_kv)
+                    new_past_len = _past_length(worker_past_kv)
                     tokens_added = new_past_len - prev_past_len
                     tokens_to_keep = self.latent_steps if self.latent_only else tokens_added
-                    past_kv = self._truncate_past(past_kv, tokens_to_keep)
+                    worker_past_kv = self._truncate_past(worker_past_kv, tokens_to_keep)
 
                 if self.latent_only:
                     if self.latent_steps > 0:
@@ -650,11 +773,27 @@ class LatentMASMethod:
 
                 embedding_record.append(previous_hidden_embedding)
 
-                if self.sequential_info_only or self.latent_only:
+                if (self.sequential_info_only or self.latent_only) and not hierarchical_mode:
                     embedding_record = embedding_record[-1:]
 
+                if not hierarchical_mode:
+                    past_kv = worker_past_kv
+                elif worker_position_offset is not None:
+                    worker_token_counts = wrapped_mask.sum(dim=-1).to(
+                        device=hierarchical_position_offset.device,
+                        dtype=hierarchical_position_offset.dtype,
+                    ) + int(self.latent_steps)
+                    if self.sequential_info_only:
+                        if self.latent_only:
+                            keep_counts = torch.full_like(worker_token_counts, int(self.latent_steps))
+                        else:
+                            worker_len = _past_length(worker_past_kv)
+                            keep_counts = torch.full_like(worker_token_counts, int(worker_len))
+                        worker_token_counts = torch.minimum(worker_token_counts, keep_counts)
+                    hierarchical_position_offset = hierarchical_position_offset + worker_token_counts
+
                 verifier_scores = self._score_choice_logits_from_cache(
-                    past_kv=past_kv,
+                    past_kv=worker_past_kv,
                     past_kv_mask=None,
                     batch_size=batch_size,
                 )

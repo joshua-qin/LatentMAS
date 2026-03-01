@@ -2,7 +2,7 @@ import os
 import csv
 import torch
 import matplotlib.pyplot as plt
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 try:
@@ -42,6 +42,24 @@ def _last_nonpad_indices(attention_mask: torch.Tensor) -> torch.Tensor:
     # Works for both left- and right-padding: pick the largest position where mask == 1.
     last = (positions * mask).max(dim=1).values
     return torch.clamp(last, min=0)
+
+def _position_ids_from_mask(
+    attention_mask: torch.Tensor,
+    *,
+    offset: Union[int, torch.Tensor] = 0,
+) -> torch.Tensor:
+    if attention_mask.dim() != 2:
+        raise ValueError("attention_mask must be 2D with shape [batch, seq_len]")
+    mask = attention_mask.to(dtype=torch.long)
+    position_ids = torch.cumsum(mask, dim=-1) - 1
+    position_ids = torch.clamp(position_ids, min=0)
+    if torch.is_tensor(offset):
+        if offset.dim() != 1 or offset.shape[0] != attention_mask.shape[0]:
+            raise ValueError("tensor offset must have shape [batch_size]")
+        position_ids = position_ids + offset.to(device=position_ids.device, dtype=position_ids.dtype).unsqueeze(-1)
+    elif int(offset) != 0:
+        position_ids = position_ids + int(offset)
+    return position_ids
 
 
 class ModelWrapper:
@@ -340,6 +358,7 @@ class ModelWrapper:
         latent_steps: int,
         past_key_values: Optional[Tuple] = None,
         past_attention_mask: Optional[torch.Tensor] = None,
+        position_offset: Optional[torch.Tensor] = None,
     ) -> Tuple:
         if input_ids.dim() != 2:
             raise ValueError("input_ids must be 2D with shape [batch, seq_len]")
@@ -349,6 +368,8 @@ class ModelWrapper:
         else:
             attention_mask = attention_mask.to(self.device)
         input_attention_mask = attention_mask
+        input_position_ids: Optional[torch.Tensor] = None
+        next_latent_position_ids: Optional[torch.Tensor] = None
 
         if past_key_values is not None:
             past_len = _past_length(past_key_values)
@@ -368,8 +389,12 @@ class ModelWrapper:
                         device=attention_mask.device, dtype=attention_mask.dtype
                     )
                 attention_mask = torch.cat([past_mask, attention_mask], dim=-1)
+        if position_offset is not None:
+            if past_key_values is not None:
+                raise ValueError("position_offset cannot be combined with past_key_values")
+            input_position_ids = _position_ids_from_mask(input_attention_mask, offset=position_offset).to(self.device)
 
-        outputs = self.model(
+        first_forward_kwargs = dict(
             input_ids=input_ids,
             attention_mask=attention_mask,
             past_key_values=past_key_values,
@@ -377,6 +402,10 @@ class ModelWrapper:
             output_hidden_states=True,
             return_dict=True,
         )
+        if input_position_ids is not None:
+            first_forward_kwargs["position_ids"] = input_position_ids
+
+        outputs = self.model(**first_forward_kwargs)
         past = outputs.past_key_values
         rollout_attention_mask = attention_mask
 
@@ -389,6 +418,8 @@ class ModelWrapper:
         e_t_plus_1 = None
         latent_vecs_all: List[torch.Tensor] = []
         latent_vecs_all.append(e_t.detach().clone())
+        if input_position_ids is not None:
+            next_latent_position_ids = input_position_ids[batch_indices, last_indices] + 1
 
         for step in range(latent_steps):
 
@@ -409,7 +440,7 @@ class ModelWrapper:
                 device=rollout_attention_mask.device,
             )
             rollout_attention_mask = torch.cat([rollout_attention_mask, latent_append], dim=-1)
-            outputs = self.model(
+            latent_forward_kwargs = dict(
                 inputs_embeds=latent_embed,
                 attention_mask=rollout_attention_mask,
                 past_key_values=past,
@@ -417,8 +448,13 @@ class ModelWrapper:
                 output_hidden_states=True,
                 return_dict=True,
             )
+            if next_latent_position_ids is not None:
+                latent_forward_kwargs["position_ids"] = next_latent_position_ids.unsqueeze(-1)
+            outputs = self.model(**latent_forward_kwargs)
             past = outputs.past_key_values
             last_hidden = outputs.hidden_states[-1][:, -1, :]
+            if next_latent_position_ids is not None:
+                next_latent_position_ids = next_latent_position_ids + 1
 
         return past
     
@@ -430,6 +466,7 @@ class ModelWrapper:
         *,
         latent_steps: int,
         past_key_values: Optional[Tuple] = None,
+        position_offset: Optional[torch.Tensor] = None,
     ) -> Tuple:
         if input_ids.dim() != 2:
             raise ValueError("input_ids must be 2D with shape [batch, seq_len]")
@@ -438,6 +475,8 @@ class ModelWrapper:
         else:
             attention_mask = attention_mask.to(self.HF_device)
         input_attention_mask = attention_mask
+        input_position_ids: Optional[torch.Tensor] = None
+        next_latent_position_ids: Optional[torch.Tensor] = None
         if past_key_values is not None:
             past_len = _past_length(past_key_values)
             if past_len > 0:
@@ -447,7 +486,12 @@ class ModelWrapper:
                     device=attention_mask.device,
                 )
                 attention_mask = torch.cat([past_mask, attention_mask], dim=-1)
-        outputs = self.HF_model(
+        if position_offset is not None:
+            if past_key_values is not None:
+                raise ValueError("position_offset cannot be combined with past_key_values")
+            input_position_ids = _position_ids_from_mask(input_attention_mask, offset=position_offset).to(self.HF_device)
+
+        first_forward_kwargs = dict(
             input_ids=input_ids,
             attention_mask=attention_mask,
             past_key_values=past_key_values,
@@ -455,11 +499,17 @@ class ModelWrapper:
             output_hidden_states=True,
             return_dict=True,
         )
+        if input_position_ids is not None:
+            first_forward_kwargs["position_ids"] = input_position_ids
+
+        outputs = self.HF_model(**first_forward_kwargs)
         past = outputs.past_key_values
         rollout_attention_mask = attention_mask
         last_indices = _last_nonpad_indices(input_attention_mask)
         batch_indices = torch.arange(input_ids.shape[0], device=input_ids.device)
         last_hidden = outputs.hidden_states[-1][batch_indices, last_indices, :]
+        if input_position_ids is not None:
+            next_latent_position_ids = input_position_ids[batch_indices, last_indices] + 1
         
         curr_output_embedding = [] 
         curr_output_embedding.append(outputs.hidden_states[0])  # input embedding
@@ -476,7 +526,7 @@ class ModelWrapper:
                 device=rollout_attention_mask.device,
             )
             rollout_attention_mask = torch.cat([rollout_attention_mask, latent_append], dim=-1)
-            outputs = self.HF_model(
+            latent_forward_kwargs = dict(
                 inputs_embeds=latent_embed,
                 attention_mask=rollout_attention_mask,
                 past_key_values=past,
@@ -484,8 +534,13 @@ class ModelWrapper:
                 output_hidden_states=True,
                 return_dict=True,
             )
+            if next_latent_position_ids is not None:
+                latent_forward_kwargs["position_ids"] = next_latent_position_ids.unsqueeze(-1)
+            outputs = self.HF_model(**latent_forward_kwargs)
             past = outputs.past_key_values
             last_hidden = outputs.hidden_states[-1][:, -1, :]
+            if next_latent_position_ids is not None:
+                next_latent_position_ids = next_latent_position_ids + 1
 
             curr_output_embedding.append(latent_embed.detach())
 
