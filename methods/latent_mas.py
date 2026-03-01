@@ -189,15 +189,17 @@ class LatentMASMethod:
             )
         return records
 
-    # Same three lenses as hierarchical text_mas (math / science / code agent).
-    FIXED_META_WORKER_PROMPTS = ["You are a math agent.", "You are a science agent.", "You are a code agent."]
+    # Three distinct broad prompts so workers get different angles without fixed personas (math/science/code).
+    BROAD_META_WORKER_PROMPTS = [
+        "Reason step-by-step and give your best answer.",
+        "Consider the question carefully, then answer.",
+        "Solve clearly and state your final answer.",
+    ]
 
     @staticmethod
     def _default_meta_prompts(worker_roles: List[str]) -> Dict[str, str]:
-        role_to_prompt: Dict[str, str] = {}
-        for idx, role in enumerate(worker_roles):
-            role_to_prompt[role] = LatentMASMethod.FIXED_META_WORKER_PROMPTS[min(idx, len(LatentMASMethod.FIXED_META_WORKER_PROMPTS) - 1)]
-        return role_to_prompt
+        prompts = LatentMASMethod.BROAD_META_WORKER_PROMPTS
+        return {role: prompts[min(i, len(prompts) - 1)] for i, role in enumerate(worker_roles)}
 
     @staticmethod
     def _normalize_meta_value(value) -> str:
@@ -271,9 +273,9 @@ class LatentMASMethod:
         if not bool(getattr(self.args, "use_meta_prompt_generator", False)):
             return [{} for _ in items], [{} for _ in items]
 
-        # Deterministic: same three prompts as text_mas (math / science / code agent) for every item; no LLM call.
+        # Deterministic: three distinct broad prompts; no LLM call.
         role_prompts = [default_map.copy() for _ in items]
-        meta_debug = [{"fixed_worker_prompts": self.FIXED_META_WORKER_PROMPTS} for _ in items]
+        meta_debug = [{"meta_prompts": self.BROAD_META_WORKER_PROMPTS} for _ in items]
         return role_prompts, meta_debug
 
     @staticmethod

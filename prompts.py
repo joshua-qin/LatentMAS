@@ -152,6 +152,19 @@ def _hier_answer_format(task: str) -> str:
     return "Give a clear final answer."
 
 
+def _hier_judger_instruction(task: str) -> str:
+    """Strict judge instruction: output only the correct answer."""
+    if task in ["gsm8k", "aime2024", "aime2025"]:
+        return "Using the question and worker reasoning above, output only the correct answer. Your response must end with \\boxed{correct_answer}. Do not add explanation or reasoning—only the final \\boxed{...}."
+    if task in ["arc_easy", "arc_challenge", "gpqa", "medqa"]:
+        return "Using the question and worker reasoning above, output only the correct answer. Your response must be exactly one of \\boxed{A}, \\boxed{B}, \\boxed{C}, or \\boxed{D}. Nothing else."
+    if task in ["mbppplus", "humanevalplus"]:
+        return "Using the question and worker reasoning above, output only the correct solution as a single Python markdown code block. No explanation—only the code block."
+    if task == "winogrande":
+        return "Using the question and worker reasoning above, output only the correct answer. Your response must be exactly \\boxed{1} or \\boxed{2}. Nothing else."
+    return "Using the question and worker reasoning above, output only the correct final answer."
+
+
 def build_agent_message_hierarchical_latent_mas(
     role: str,
     question: str,
@@ -172,13 +185,15 @@ def build_agent_message_hierarchical_latent_mas(
 
     if args.task in ['gsm8k', 'aime2024', 'aime2025']:
         fmt = _hier_answer_format(args.task)
+        judge_inst = _hier_judger_instruction(args.task)
         if role == "judger":
-            user_content = f"Given the question and worker reasoning above, give the best answer. {fmt}\n\nInput Question: {question}\n\nYour response:"
+            user_content = f"{judge_inst}\n\nInput Question: {question}\n\nYour response:"
         else:
             user_content = f"Independent worker. Reason step-by-step. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
 
     elif args.task in ["arc_easy", "arc_challenge", "gpqa", "medqa"]:
         fmt = _hier_answer_format(args.task)
+        judge_inst = _hier_judger_instruction(args.task)
         if args.task == "medqa":
             if role == "planner":
                 user_content = f"Worker 1. Solve. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
@@ -187,24 +202,26 @@ def build_agent_message_hierarchical_latent_mas(
             elif role == "refiner":
                 user_content = f"Worker 3. Solve. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
             elif role == "judger":
-                user_content = f"Given the question and worker reasoning above, give the best answer. {fmt}\n\nInput Question: {question}\n\nYour response:"
+                user_content = f"{judge_inst}\n\nInput Question: {question}\n\nYour response:"
         else:
             if role == "judger":
-                user_content = f"Given the question and worker reasoning above, give the best answer. {fmt}\n\nInput Question: {question}\n\nYour response:"
+                user_content = f"{judge_inst}\n\nInput Question: {question}\n\nYour response:"
             else:
                 user_content = f"Independent worker. Reason step-by-step. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
 
     elif args.task in ["mbppplus", "humanevalplus"]:
         fmt = _hier_answer_format(args.task)
+        judge_inst = _hier_judger_instruction(args.task)
         if role == "judger":
-            user_content = f"Given the question and worker reasoning above, give the best answer. {fmt}\n\nInput Question: {question}\n\nYour response:"
+            user_content = f"{judge_inst}\n\nInput Question: {question}\n\nYour response:"
         else:
             user_content = f"Independent worker. Solve with a self-contained Python function in one markdown code block.{meta_guidance}\nInput Question: {question}\n\nYour response:"
 
     elif args.task in ["winogrande"]:
         fmt = _hier_answer_format(args.task)
+        judge_inst = _hier_judger_instruction(args.task)
         if role == "judger":
-            user_content = f"Given the question and worker reasoning above, give the best answer. {fmt}\n\nInput Question: {question}\n\nYour response:"
+            user_content = f"{judge_inst}\n\nInput Question: {question}\n\nYour response:"
         else:
             user_content = f"Independent worker. Reason step-by-step. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
 
