@@ -15,20 +15,11 @@ def _hierarchical_meta_task_constraints(task: str) -> str:
 
 
 def build_meta_agent_message_hierarchical_latent_mas(question: str, args=None):
-    system_message = """Return strict JSON only.
-No markdown. No explanations. No <think>. No extra text.
-Output schema:
-{"worker_prompts":["...","...","..."]}
-
-Requirements:
-- Exactly 3 prompts.
-- 8-14 words per prompt.
-- Use 3 different reasoning lenses.
-- Each prompt must include one concrete anchor from the stem (age/symptom/lab/timeline/exam).
-- Do not solve the question.
-- Do not mention option letters or a likely answer.
-- Keep prompts concise, neutral, and non-overlapping.
-"""
+    system_message = """Output strict JSON only. No markdown, <think>, or extra text.
+Schema: {"worker_prompts":["...","...","..."]}
+- Exactly 3 prompts, 8–14 words each, 3 different reasoning lenses.
+- Each prompt: one concrete anchor from the stem (age/symptom/lab/timeline/exam).
+- Do not solve the question or mention options/answers. Concise, neutral, non-overlapping."""
     user_content = f"Question:\n{question}"
     return [
         {"role": "system", "content": system_message},
@@ -152,6 +143,19 @@ Now, reason step by step and output the final answer inside \\boxed{{YOUR_FINAL_
     ]
 
 
+def _hier_answer_format(task: str) -> str:
+    """One-line answer format for hierarchical latent MAS."""
+    if task in ["gsm8k", "aime2024", "aime2025"]:
+        return "End with \\boxed{YOUR_FINAL_ANSWER}."
+    if task in ["arc_easy", "arc_challenge", "gpqa", "medqa"]:
+        return "Answer A/B/C/D only. End with \\boxed{A/B/C/D}."
+    if task in ["mbppplus", "humanevalplus"]:
+        return "Output a single self-contained Python markdown code block."
+    if task == "winogrande":
+        return "Answer 1 or 2. End with \\boxed{1} or \\boxed{2}."
+    return "Give a clear final answer."
+
+
 def build_agent_message_hierarchical_latent_mas(
     role: str,
     question: str,
@@ -171,238 +175,45 @@ def build_agent_message_hierarchical_latent_mas(
         meta_guidance = f"\nMeta-Agent Guidance:\n{meta_prompt}\n"
 
     if args.task in ['gsm8k', 'aime2024', 'aime2025']:
-        if role == "planner":
-            user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-{meta_guidance}
-
-Input Question: {question}
-
-Your response:
-"""
-    
-        elif role == "critic":
-            user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-{meta_guidance}
-
-Input Question: {question}     
-
-Your response:
-"""
-    
-        elif role == "refiner":
-            user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-{meta_guidance}
-
-Input Question: {question}
-
-Your response:       
-"""
-        elif role == "judger":
-            user_content = f"""
-You are a task summarizer. Given the input question and responses from previous agents as reference, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-
-Input Question: {question}
-
-Your response:
-"""
+        fmt = _hier_answer_format(args.task)
+        if role == "judger":
+            user_content = f"Task summarizer. Use the question and prior worker traces. Reason step-by-step. {fmt}\n\nInput Question: {question}\n\nYour response:"
+        else:
+            user_content = f"Independent worker. Reason step-by-step. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
 
     elif args.task in ["arc_easy", "arc_challenge", "gpqa", "medqa"]:
-
+        fmt = _hier_answer_format(args.task)
         if args.task == "medqa":
-
             if role == "planner":
-                user_content = f"""
-You are Worker 1 (Planner) in a hierarchical system. Solve this medical multiple-choice question independently.
-Reason step-by-step with clinical evidence from the stem, eliminate distractors, and keep reasoning concise.
-Your final answer must be selected from A,B,C,D. For example \\boxed{{A}}. Do not add any other contents inside the box.
-End with exactly one final boxed answer.
-{meta_guidance}
-
-Input Question: {question}
-
-Your response:
-"""
+                user_content = f"Worker 1 (Planner). Solve independently with clinical evidence; eliminate distractors. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
             elif role == "critic":
-                user_content = f"""
-You are Worker 2 (Critic) in a hierarchical system. Solve this medical multiple-choice question independently.
-Reason step-by-step, challenge common traps, and explain why the strongest distractor is wrong.
-Your final answer must be selected from A,B,C,D. For example \\boxed{{B}}. Do not add any other contents inside the box.
-End with exactly one final boxed answer.
-{meta_guidance}
-
-Input Question: {question}     
-
-Your response:
-"""
+                user_content = f"Worker 2 (Critic). Challenge traps; explain why the strongest distractor is wrong. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
             elif role == "refiner":
-                user_content = f"""
-You are Worker 3 (Refiner) in a hierarchical system. Solve this medical multiple-choice question independently.
-Reason step-by-step, reconcile diagnosis/pathophysiology/timeline clues, and choose the best-supported option.
-Your final answer must be selected from A,B,C,D. For example \\boxed{{C}}. Do not add any other contents inside the box.
-End with exactly one final boxed answer.
-{meta_guidance}
-
-Input Question: {question}
-
-Your response:       
-"""
+                user_content = f"Worker 3 (Refiner). Reconcile diagnosis/pathophysiology/timeline; choose best-supported option. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
             elif role == "judger":
-
-                user_content = f"""
-You are the Judger in a hierarchical system. You are given the original question plus latent reasoning traces from independent workers.
-Re-solve the question step-by-step and use worker traces as additional evidence.
-If workers disagree, prioritize the answer best supported by the clinical details.
-Your final answer must be selected from A,B,C,D. For example \\boxed{{D}}. Do not add any other contents inside the box.
-End with exactly one final boxed answer.
-
-Input Question: {question}
-
-Your response:
-"""
-
+                user_content = f"Judger. Re-solve using question and latent worker traces. If workers disagree, pick the answer best supported by clinical details. {fmt}\n\nInput Question: {question}\n\nYour response:"
         else:
-            if role == "planner":
-                user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-Your final answer must be selected from A,B,C,D. For example \\boxed{{A}}. Do not add any other contents inside the box.
-{meta_guidance}
-
-Input Question: {question}
-
-Your response:
-"""
-    
-            elif role == "critic":
-                user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-Your final answer must be selected from A,B,C,D. For example \\boxed{{A}}. Do not add any other contents inside the box.
-{meta_guidance}
-
-Input Question: {question}     
-
-Your response:
-"""
-    
-            elif role == "refiner":
-                user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-Your final answer must be selected from A,B,C,D. For example \\boxed{{A}}. Do not add any other contents inside the box.
-{meta_guidance}
-
-Input Question: {question}
-
-Your response:       
-"""
-            elif role == "judger":
-
-                user_content = f"""
-You are a task summarizer. Given the input question and responses from previous agents as reference, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-Your final answer must be selected from A,B,C,D. For example \\boxed{{A}}. Do not add any other contents inside the box.
-
-Input Question: {question}
-
-Your response:
-"""
+            if role == "judger":
+                user_content = f"Task summarizer. Use question and prior worker traces. Reason step-by-step. {fmt}\n\nInput Question: {question}\n\nYour response:"
+            else:
+                user_content = f"Independent worker. Reason step-by-step. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
 
     elif args.task in ["mbppplus", "humanevalplus"]:
-        
-        if role == "planner":
-            user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, reason step by step: please provide an efficient and self-contained Python function that solves the following problem in a markdown code block:\n```\nYOUR_PYTHON_CODE\n```.
-You must put all python code as self-contained Python function in markdown code blocks. For example ```python
-import math
-def add(a, b):
-    return a + b```. Do not add any other contents inside the markdown code block. 
-{meta_guidance}
-
-Input Question: {question}
-
-Your response:
-"""
-        elif role == "critic":
-            user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, reason step by step: please provide an efficient and self-contained Python function that solves the following problem in a markdown code block:\n```\nYOUR_PYTHON_CODE\n```.
-You must put all python code as self-contained Python function in markdown code blocks. For example ```python
-import math
-def add(a, b):
-    return a + b```. Do not add any other contents inside the markdown code block. 
-{meta_guidance}
-
-Input Question: {question}
-
-Your response:
-"""
-        elif role == "refiner":
-            user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, reason step by step: please provide an efficient and self-contained Python function that solves the following problem in a markdown code block:\n```\nYOUR_PYTHON_CODE\n```.
-You must put all python code as self-contained Python function in markdown code blocks. For example ```python
-import math
-def add(a, b):
-    return a + b```. Do not add any other contents inside the markdown code block. 
-{meta_guidance}
-
-Input Question: {question}
-
-Your response:       
-"""
-        elif role == "judger":
-            user_content = f"""
-You are a task summarizer. Given the input question and responses from previous agents as reference, reason step by step: please provide an efficient and self-contained Python function that solves the following problem in a markdown code block:\n```\nYOUR_PYTHON_CODE\n```.
-You must put all python code as self-contained Python function in markdown code blocks. For example ```python
-import needed_library
-def FUNC_NAME(a, b):
-    return a + b```. Do not add any other contents inside the markdown code block. 
-    
-Input Question: {question}
-
-Your response:
-"""
+        fmt = _hier_answer_format(args.task)
+        if role == "judger":
+            user_content = f"Task summarizer. Use question and prior worker traces. {fmt}\n\nInput Question: {question}\n\nYour response:"
+        else:
+            user_content = f"Independent worker. Solve with a self-contained Python function in one markdown code block.{meta_guidance}\nInput Question: {question}\n\nYour response:"
 
     elif args.task in ["winogrande"]:
-        if role == "planner":
-            user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-"Your final answer must be selected from 1 and 2. For example \\boxed{{1}} or \\boxed{{2}}. Do not add any other contents inside the box."
-{meta_guidance}
+        fmt = _hier_answer_format(args.task)
+        if role == "judger":
+            user_content = f"Task summarizer. Use question and prior worker traces. Reason step-by-step. {fmt}\n\nInput Question: {question}\n\nYour response:"
+        else:
+            user_content = f"Independent worker. Reason step-by-step. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
 
-Input Question: {question}
-
-Your response:
-"""
-    
-        elif role == "critic":
-            user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-"Your final answer must be selected from 1 and 2. For example \\boxed{{1}} or \\boxed{{2}}. Do not add any other contents inside the box."
-{meta_guidance}
-
-Input Question: {question}     
-
-Your response:
-"""
-    
-        elif role == "refiner":
-            user_content = f"""
-You are an independent worker agent in a hierarchical system. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-"Your final answer must be selected from 1 and 2. For example \\boxed{{1}} or \\boxed{{2}}. Do not add any other contents inside the box."
-{meta_guidance}
-
-Input Question: {question}
-
-Your response:       
-"""
-        elif role == "judger":
-            user_content = f"""
-You are a task summarizer. Given the input question and responses from previous agents as reference, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
-"Your final answer must be selected from 1 and 2. For example \\boxed{{1}} or \\boxed{{2}}. Do not add any other contents inside the box."
-
-Input Question: {question}
-
-Your response:
-"""
+    else:
+        raise NotImplementedError(f"Task {args.task} not implemented for hierarchical latent_mas.")
 
     return [
         {"role": "system", "content": system_message},

@@ -539,30 +539,10 @@ class LatentMASMethod:
                 worker_shared_past_kv = worker_past_kv
                 worker_shared_past_kv_mask = worker_past_kv_mask
                 if hierarchical_mode:
-                    # In hierarchical mode, keep full KV (for positional consistency) but expose
-                    # only the worker's latent reasoning via attention mask.
-                    reasoning_tokens_to_keep = max(0, int(self.latent_steps))
                     full_worker_len = _past_length(worker_past_kv)
-                    if full_worker_len <= 0:
-                        worker_shared_past_kv_mask = None
-                    else:
-                        if worker_past_kv_mask is not None and worker_past_kv_mask.shape == (batch_size, full_worker_len):
-                            base_mask = worker_past_kv_mask.to(
-                                device=wrapped_mask.device, dtype=wrapped_mask.dtype
-                            )
-                        else:
-                            base_mask = torch.ones(
-                                (batch_size, full_worker_len),
-                                dtype=wrapped_mask.dtype,
-                                device=wrapped_mask.device,
-                            )
-                        worker_shared_past_kv_mask = torch.zeros_like(base_mask)
-                        if reasoning_tokens_to_keep > 0:
-                            keep = min(reasoning_tokens_to_keep, full_worker_len)
-                            worker_shared_past_kv_mask[:, -keep:] = base_mask[:, -keep:]
-
                     if worker_position_offset is not None:
-                        # Offset must advance by the full worker positional span.
+                        # Keep hierarchical mode aligned with sequential cache semantics:
+                        # preserve full worker cache/mask and only change worker independence.
                         if worker_past_kv_mask is not None:
                             worker_token_counts = worker_past_kv_mask.sum(dim=-1).to(
                                 device=hierarchical_position_offset.device,
@@ -808,20 +788,15 @@ class LatentMASMethod:
                 worker_shared_past_kv = worker_past_kv
                 worker_shared_past_kv_mask = None
                 if hierarchical_mode:
-                    reasoning_tokens_to_keep = max(0, int(self.latent_steps))
+                    # Keep full worker embeddings in hierarchical mode to match sequential
+                    # semantics, with independence as the only intended difference.
                     full_worker_len = _past_length(worker_past_kv)
                     if full_worker_len > 0:
-                        worker_shared_past_kv_mask = torch.zeros(
+                        worker_shared_past_kv_mask = torch.ones(
                             (batch_size, full_worker_len),
                             dtype=wrapped_mask.dtype,
                             device=wrapped_mask.device,
                         )
-                        if reasoning_tokens_to_keep > 0:
-                            keep = min(reasoning_tokens_to_keep, full_worker_len)
-                            worker_shared_past_kv_mask[:, -keep:] = 1
-                            previous_hidden_embedding = previous_hidden_embedding[:, -keep:, :]
-                        else:
-                            previous_hidden_embedding = previous_hidden_embedding[:, 0:0, :]
                     else:
                         previous_hidden_embedding = previous_hidden_embedding[:, 0:0, :]
 
