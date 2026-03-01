@@ -15,11 +15,7 @@ def _hierarchical_meta_task_constraints(task: str) -> str:
 
 
 def build_meta_agent_message_hierarchical_latent_mas(question: str, args=None):
-    system_message = """Output strict JSON only. No markdown, <think>, or extra text.
-Schema: {"worker_prompts":["...","...","..."]}
-- Exactly 3 prompts, 8–14 words each, 3 different reasoning lenses.
-- Each prompt: one concrete anchor from the stem (age/symptom/lab/timeline/exam).
-- Do not solve the question or mention options/answers. Concise, neutral, non-overlapping."""
+    system_message = """JSON only: {"worker_prompts":["...","...","..."]}. Exactly 3 short prompts, 3 different angles. No solving, no answers."""
     user_content = f"Question:\n{question}"
     return [
         {"role": "system", "content": system_message},
@@ -177,7 +173,7 @@ def build_agent_message_hierarchical_latent_mas(
     if args.task in ['gsm8k', 'aime2024', 'aime2025']:
         fmt = _hier_answer_format(args.task)
         if role == "judger":
-            user_content = f"Task summarizer. Use the question and prior worker traces. Reason step-by-step. {fmt}\n\nInput Question: {question}\n\nYour response:"
+            user_content = f"Given the question and worker reasoning above, give the best answer. {fmt}\n\nInput Question: {question}\n\nYour response:"
         else:
             user_content = f"Independent worker. Reason step-by-step. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
 
@@ -185,30 +181,30 @@ def build_agent_message_hierarchical_latent_mas(
         fmt = _hier_answer_format(args.task)
         if args.task == "medqa":
             if role == "planner":
-                user_content = f"Worker 1 (Planner). Solve independently with clinical evidence; eliminate distractors. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
+                user_content = f"Worker 1. Solve. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
             elif role == "critic":
-                user_content = f"Worker 2 (Critic). Challenge traps; explain why the strongest distractor is wrong. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
+                user_content = f"Worker 2. Solve. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
             elif role == "refiner":
-                user_content = f"Worker 3 (Refiner). Reconcile diagnosis/pathophysiology/timeline; choose best-supported option. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
+                user_content = f"Worker 3. Solve. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
             elif role == "judger":
-                user_content = f"Judger. Re-solve using question and latent worker traces. If workers disagree, pick the answer best supported by clinical details. {fmt}\n\nInput Question: {question}\n\nYour response:"
+                user_content = f"Given the question and worker reasoning above, give the best answer. {fmt}\n\nInput Question: {question}\n\nYour response:"
         else:
             if role == "judger":
-                user_content = f"Task summarizer. Use question and prior worker traces. Reason step-by-step. {fmt}\n\nInput Question: {question}\n\nYour response:"
+                user_content = f"Given the question and worker reasoning above, give the best answer. {fmt}\n\nInput Question: {question}\n\nYour response:"
             else:
                 user_content = f"Independent worker. Reason step-by-step. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
 
     elif args.task in ["mbppplus", "humanevalplus"]:
         fmt = _hier_answer_format(args.task)
         if role == "judger":
-            user_content = f"Task summarizer. Use question and prior worker traces. {fmt}\n\nInput Question: {question}\n\nYour response:"
+            user_content = f"Given the question and worker reasoning above, give the best answer. {fmt}\n\nInput Question: {question}\n\nYour response:"
         else:
             user_content = f"Independent worker. Solve with a self-contained Python function in one markdown code block.{meta_guidance}\nInput Question: {question}\n\nYour response:"
 
     elif args.task in ["winogrande"]:
         fmt = _hier_answer_format(args.task)
         if role == "judger":
-            user_content = f"Task summarizer. Use question and prior worker traces. Reason step-by-step. {fmt}\n\nInput Question: {question}\n\nYour response:"
+            user_content = f"Given the question and worker reasoning above, give the best answer. {fmt}\n\nInput Question: {question}\n\nYour response:"
         else:
             user_content = f"Independent worker. Reason step-by-step. {fmt}{meta_guidance}\nInput Question: {question}\n\nYour response:"
 

@@ -189,16 +189,14 @@ class LatentMASMethod:
             )
         return records
 
+    # Same three lenses as hierarchical text_mas (math / science / code agent).
+    FIXED_META_WORKER_PROMPTS = ["You are a math agent.", "You are a science agent.", "You are a code agent."]
+
     @staticmethod
     def _default_meta_prompts(worker_roles: List[str]) -> Dict[str, str]:
-        defaults = [
-            "Use a decomposition-first strategy: break the task into explicit subproblems and solve step by step.",
-            "Use a verification-first strategy: challenge assumptions, test alternatives, and justify each step.",
-            "Use an efficiency-first strategy: target a concise solution path with minimal but sufficient reasoning.",
-        ]
         role_to_prompt: Dict[str, str] = {}
         for idx, role in enumerate(worker_roles):
-            role_to_prompt[role] = defaults[min(idx, len(defaults) - 1)]
+            role_to_prompt[role] = LatentMASMethod.FIXED_META_WORKER_PROMPTS[min(idx, len(LatentMASMethod.FIXED_META_WORKER_PROMPTS) - 1)]
         return role_to_prompt
 
     @staticmethod
@@ -273,59 +271,9 @@ class LatentMASMethod:
         if not bool(getattr(self.args, "use_meta_prompt_generator", False)):
             return [{} for _ in items], [{} for _ in items]
 
-        batch_messages = [
-            build_meta_agent_message_hierarchical_latent_mas(question=item["question"], args=self.args)
-            for item in items
-        ]
-        # Meta generation: no_think (enable_thinking=False) and max_tokens=512
-        prepare_kwargs = {"enable_thinking": False}
-        try:
-            prompts, input_ids, attention_mask, _ = self.model.prepare_chat_batch(
-                batch_messages, add_generation_prompt=True, **prepare_kwargs
-            )
-        except TypeError:
-            # Tokenizer does not support enable_thinking (e.g. non-Qwen3)
-            prompts, input_ids, attention_mask, _ = self.model.prepare_chat_batch(
-                batch_messages, add_generation_prompt=True
-            )
-        meta_max_tokens = 512
-        if self.model.use_vllm:
-            generated = self.model.vllm_generate_text_batch(
-                prompts,
-                max_new_tokens=meta_max_tokens,
-                temperature=0.0,
-                top_p=1.0,
-                do_sample=False,
-            )
-        else:
-            generated, _ = self.model.generate_text_batch(
-                input_ids,
-                attention_mask,
-                max_new_tokens=meta_max_tokens,
-                temperature=0.0,
-                top_p=1.0,
-                do_sample=False,
-            )
-
-        role_prompts: List[Dict[str, str]] = []
-        meta_debug: List[Dict] = []
-        for text in generated:
-            parsed = self._parse_meta_json(text)
-            combined = default_map.copy()
-            used_default_roles: List[str] = []
-            for idx, role in enumerate(worker_roles):
-                if idx < len(parsed) and parsed[idx]:
-                    combined[role] = parsed[idx]
-                else:
-                    used_default_roles.append(role)
-            role_prompts.append(combined)
-            meta_debug.append(
-                {
-                    "raw_output": text,
-                    "parsed_worker_prompts": parsed,
-                    "used_default_roles": used_default_roles,
-                }
-            )
+        # Deterministic: same three prompts as text_mas (math / science / code agent) for every item; no LLM call.
+        role_prompts = [default_map.copy() for _ in items]
+        meta_debug = [{"fixed_worker_prompts": self.FIXED_META_WORKER_PROMPTS} for _ in items]
         return role_prompts, meta_debug
 
     @staticmethod
